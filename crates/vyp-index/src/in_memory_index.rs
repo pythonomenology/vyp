@@ -59,6 +59,21 @@ pub struct WheelInfo {
 pub struct MetadataResult {
     pub dependencies: Vec<Requirement>,
     pub full_metadata: Option<PackageMetadata>,
+    /// Set when the fetch task ended without producing a result (e.g. it
+    /// panicked), so the resolver can report it instead of silently treating
+    /// the version as having no dependencies.
+    pub fetch_error: Option<String>,
+}
+
+impl MetadataResult {
+    /// An empty result carrying a failure reason.
+    pub fn error(reason: impl Into<String>) -> Self {
+        Self {
+            dependencies: Vec::new(),
+            full_metadata: None,
+            fetch_error: Some(reason.into()),
+        }
+    }
 }
 
 /// A slot that starts empty and is filled exactly once.
@@ -80,6 +95,17 @@ impl<T> Slot<T> {
     fn set(&self, val: T) {
         *self.value.lock().expect("poisoned") = Some(Arc::new(val));
         self.ready.notify_all();
+    }
+
+    /// Store `val()` only if the slot is still empty. Runs from `Drop` during
+    /// unwinding, so it tolerates a poisoned lock rather than panicking again.
+    fn set_if_empty(&self, val: impl FnOnce() -> T) {
+        let mut guard = self.value.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            *guard = Some(Arc::new(val()));
+            drop(guard);
+            self.ready.notify_all();
+        }
     }
 
     fn wait_blocking(&self) -> Arc<T> {
@@ -184,6 +210,61 @@ impl InMemoryIndex {
             .or_insert_with(|| Arc::new(Slot::new()))
             .clone();
         slot.set(result);
+    }
+}
+
+/// Held by the task that won `register_versions`. If the task ends without
+/// calling `set_versions` (a panic, which tokio swallows, or an early return),
+/// dropping the claim fills the slot with an error so `wait_versions` returns
+/// instead of blocking the solver forever.
+#[must_use = "dropping the claim immediately fills the slot with an error"]
+pub struct VersionsClaim {
+    index: Arc<InMemoryIndex>,
+    package: String,
+}
+
+impl VersionsClaim {
+    pub fn new(index: Arc<InMemoryIndex>, package: &str) -> Self {
+        Self { index, package: package.to_string() }
+    }
+}
+
+impl Drop for VersionsClaim {
+    fn drop(&mut self) {
+        let slot = self.index.versions
+            .entry(self.package.clone())
+            .or_insert_with(|| Arc::new(Slot::new()))
+            .clone();
+        slot.set_if_empty(|| VersionsResult::error(format!(
+            "version fetch for {} ended without a result", self.package
+        )));
+    }
+}
+
+/// Held by the task that won `register_metadata`; the metadata counterpart of
+/// [`VersionsClaim`].
+#[must_use = "dropping the claim immediately fills the slot with an error"]
+pub struct MetadataClaim {
+    index: Arc<InMemoryIndex>,
+    package: String,
+    version: VypVersion,
+}
+
+impl MetadataClaim {
+    pub fn new(index: Arc<InMemoryIndex>, package: &str, version: &VypVersion) -> Self {
+        Self { index, package: package.to_string(), version: version.clone() }
+    }
+}
+
+impl Drop for MetadataClaim {
+    fn drop(&mut self) {
+        let slot = self.index.metadata
+            .entry((self.package.clone(), self.version.clone()))
+            .or_insert_with(|| Arc::new(Slot::new()))
+            .clone();
+        slot.set_if_empty(|| MetadataResult::error(format!(
+            "metadata fetch for {}=={} ended without a result", self.package, self.version
+        )));
     }
 }
 

@@ -6,7 +6,9 @@ use tokio::sync::Semaphore;
 use vyp_api::traits::metadata_provider::{MetadataProvider, PackageMetadata, PackageVersions};
 use vyp_api::{IndexScope, MarkerEnvironment, VypPackage, VypVersion, ConflictSet, Requirement};
 
-use crate::in_memory_index::{InMemoryIndex, MetadataResult, VersionsResult, WheelInfo};
+use crate::in_memory_index::{
+    InMemoryIndex, MetadataClaim, MetadataResult, VersionsClaim, VersionsResult, WheelInfo,
+};
 use crate::wheel_compat::PlatformTags;
 use crate::wheel_metadata::fetch_wheel_metadata;
 
@@ -244,8 +246,11 @@ impl PyPIMetadataProvider {
         let marker_env = self.marker_env.clone();
         let counters = Arc::clone(&self.profile_counters);
         let pkg = normalized.to_string();
+        let claim = VersionsClaim::new(Arc::clone(&self.index), normalized);
 
         self.runtime.spawn(async move {
+            // Fills the slot with an error if this task ends without a result.
+            let _claim = claim;
             // Disk cache fast path (brief lock, no I/O, never held across .await).
             {
                 let cache = disk_cache.lock().expect("poisoned");
@@ -350,6 +355,13 @@ impl PyPIMetadataProvider {
             return;
         }
 
+        // The wheel list decides where METADATA comes from, so it must be
+        // known first. Callers that skip `available_versions` (an exact-pin
+        // override, or a provider asked only for metadata) would otherwise
+        // find no wheels and record the version as having no dependencies.
+        self.ensure_versions_fetching(normalized);
+        let versions = self.index.wait_versions(normalized);
+
         if !self.index.register_metadata(normalized, version) {
             return;
         }
@@ -357,11 +369,15 @@ impl PyPIMetadataProvider {
         // Two ways to obtain METADATA: a PEP 658 sidecar (preferred, one cheap
         // GET) or, for indexes without it (e.g. download.pytorch.org), a range
         // request into any wheel of this version.
-        let wheels = self.index.get_wheel_info(normalized, version);
+        let wheels = versions.wheel_info.get(version).cloned();
         let pep658_url = wheels.as_ref().and_then(|ws| {
             ws.iter().find(|w| w.has_metadata).map(|w| w.url.clone())
         });
         let range_wheel_url = wheels.as_ref().and_then(|ws| best_wheel_url(ws, &self.marker_env));
+        // With no wheel to read and a failed version list, report that failure
+        // rather than an empty dependency list.
+        let versions_error = versions.fetch_error.clone()
+            .filter(|_| pep658_url.is_none() && range_wheel_url.is_none());
 
         let client = self.client.clone();
         let idx = Arc::clone(&self.index);
@@ -371,8 +387,11 @@ impl PyPIMetadataProvider {
         let counters = Arc::clone(&self.profile_counters);
         let pkg = normalized.to_string();
         let ver = version.clone();
+        let claim = MetadataClaim::new(Arc::clone(&self.index), normalized, version);
 
         self.runtime.spawn(async move {
+            // Fills the slot with an error if this task ends without a result.
+            let _claim = claim;
             let cached = disk_cache.lock().expect("poisoned").get(&pkg, &ver);
 
             if let Some(cached_meta) = cached {
@@ -380,6 +399,7 @@ impl PyPIMetadataProvider {
                 idx.set_metadata(&pkg, &ver, MetadataResult {
                     dependencies: cached_meta.dependencies.clone(),
                     full_metadata: Some(cached_meta),
+                    fetch_error: None,
                 });
                 return;
             }
@@ -407,6 +427,7 @@ impl PyPIMetadataProvider {
                     idx.set_metadata(&pkg, &ver, MetadataResult {
                         dependencies: meta.dependencies.clone(),
                         full_metadata: Some(meta.clone()),
+                        fetch_error: None,
                     });
                     let p = pkg;
                     let v = ver;
@@ -424,6 +445,7 @@ impl PyPIMetadataProvider {
                     idx.set_metadata(&pkg, &ver, MetadataResult {
                         dependencies: Vec::new(),
                         full_metadata: None,
+                        fetch_error: versions_error,
                     });
                 }
             }
@@ -481,6 +503,7 @@ impl PyPIMetadataProvider {
             if !index.register_metadata(pkg, &version) {
                 continue;
             }
+            let claim = MetadataClaim::new(Arc::clone(index), pkg, &version);
             let cached_meta = {
                 disk_cache.lock().expect("poisoned").get(pkg, &version)
             };
@@ -489,6 +512,7 @@ impl PyPIMetadataProvider {
                 index.set_metadata(pkg, &version, MetadataResult {
                     dependencies: cached_meta.dependencies.clone(),
                     full_metadata: Some(cached_meta),
+                    fetch_error: None,
                 });
                 continue;
             }
@@ -501,6 +525,7 @@ impl PyPIMetadataProvider {
             let p = pkg.to_string();
             let metadata_url = format!("{}.metadata", wheel_url);
             tokio::spawn(async move {
+                let _claim = claim;
                 match fetch_metadata_async(
                     &cl, &metadata_url, &p, &version,
                     &env, &sem,
@@ -510,6 +535,7 @@ impl PyPIMetadataProvider {
                         idx.set_metadata(&p, &version, MetadataResult {
                             dependencies: deps,
                             full_metadata: Some(meta.clone()),
+                            fetch_error: None,
                         });
                         let v = version.clone();
                         tokio::task::spawn_blocking(move || {
@@ -521,6 +547,7 @@ impl PyPIMetadataProvider {
                         idx.set_metadata(&p, &version, MetadataResult {
                             dependencies: Vec::new(),
                             full_metadata: None,
+                            fetch_error: None,
                         });
                     }
                 }
@@ -994,6 +1021,9 @@ impl MetadataProvider for PyPIMetadataProvider {
         self.ensure_metadata_fetching(&normalized, version);
         // Block the solver thread on the Notify until data arrives.
         let result = self.index.wait_metadata(&normalized, version);
+        if let Some(err) = &result.fetch_error {
+            return Err(err.clone().into());
+        }
         Ok(result.full_metadata.clone())
     }
 
@@ -1016,23 +1046,22 @@ impl MetadataProvider for PyPIMetadataProvider {
         let normalized = package.to_lowercase().replace(['-', '.'], "_");
 
         for version in versions {
-            // Atomically claim. Skip if someone else is already fetching.
-            if !self.index.register_metadata(&normalized, version) {
-                continue;
-            }
-
+            // Only versions with a PEP 658 sidecar are prefetched. Others are
+            // left unclaimed so `get_metadata` can still try a ranged wheel
+            // read instead of finding an empty result here.
             let has_metadata = self.index
                 .get_wheel_info(&normalized, version)
                 .map(|wheels| wheels.iter().any(|w| w.has_metadata))
                 .unwrap_or(false);
-
             if !has_metadata {
-                self.index.set_metadata(&normalized, version, MetadataResult {
-                    dependencies: Vec::new(),
-                    full_metadata: None,
-                });
                 continue;
             }
+
+            // Atomically claim. Skip if someone else is already fetching.
+            if !self.index.register_metadata(&normalized, version) {
+                continue;
+            }
+            let claim = MetadataClaim::new(Arc::clone(&self.index), &normalized, version);
 
             let client = self.client.clone();
             let idx = Arc::clone(&self.index);
@@ -1043,10 +1072,12 @@ impl MetadataProvider for PyPIMetadataProvider {
             let ver = version.clone();
 
             self.runtime.spawn(async move {
+                let _claim = claim;
                 if let Some(cached_meta) = cache.lock().expect("poisoned").get(&pkg, &ver) {
                     idx.set_metadata(&pkg, &ver, MetadataResult {
                         dependencies: cached_meta.dependencies.clone(),
                         full_metadata: Some(cached_meta),
+                        fetch_error: None,
                     });
                     return;
                 }
@@ -1064,6 +1095,7 @@ impl MetadataProvider for PyPIMetadataProvider {
                         idx.set_metadata(&pkg, &ver, MetadataResult {
                             dependencies: deps,
                             full_metadata: Some(meta),
+                            fetch_error: None,
                         });
                         return;
                     }
@@ -1072,6 +1104,7 @@ impl MetadataProvider for PyPIMetadataProvider {
                 idx.set_metadata(&pkg, &ver, MetadataResult {
                     dependencies: Vec::new(),
                     full_metadata: None,
+                    fetch_error: None,
                 });
             });
         }

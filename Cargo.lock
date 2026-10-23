@@ -2310,7 +2310,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vyp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "filetime",
@@ -2338,7 +2338,7 @@ dependencies = [
 
 [[package]]
 name = "vyp-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2347,7 +2347,7 @@ dependencies = [
 
 [[package]]
 name = "vyp-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dashmap",
  "indexmap",
@@ -2368,7 +2368,7 @@ dependencies = [
 
 [[package]]
 name = "vyp-index"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ciborium",
  "dashmap",
@@ -2383,7 +2383,7 @@ dependencies = [
 
 [[package]]
 name = "vyp-resolver"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "indexmap",
  "version-ranges",

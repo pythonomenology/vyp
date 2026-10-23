@@ -83,6 +83,15 @@ fn parse_content_range_start(value: &str) -> Option<u64> {
     range.split('-').next()?.trim().parse().ok()
 }
 
+/// Last byte offset of `len` bytes starting at `start`, for an inclusive HTTP
+/// `Range` end. `None` when the span is empty (`len == 0`) or overflows.
+fn inclusive_range_end(start: u64, len: u64) -> Option<u64> {
+    if len == 0 {
+        return None;
+    }
+    start.checked_add(len - 1)
+}
+
 /// A central-directory entry we care about.
 struct CentralEntry {
     method: u16,
@@ -169,7 +178,10 @@ pub async fn fetch_wheel_metadata(
             .ok_or("central directory out of range")?
             .to_vec()
     } else {
-        let end = cd_offset + cd_size - 1;
+        // An empty central directory (e.g. a malformed or hostile EOCD with
+        // offset 0 and size 0) has no METADATA; `cd_offset + cd_size - 1`
+        // would underflow here.
+        let end = inclusive_range_end(cd_offset, cd_size).ok_or("empty central directory")?;
         range_get(client, wheel_url, &format!("bytes={}-{}", cd_offset, end))
             .await?
             .bytes
