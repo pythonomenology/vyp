@@ -105,10 +105,8 @@ fn prune_pyc_for(py_file: &Path, dirs: &mut BTreeSet<PathBuf>) -> usize {
     let mut removed = 0;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(&prefix) && name.ends_with(".pyc") {
-            if std::fs::remove_file(entry.path()).is_ok() {
-                removed += 1;
-            }
+        if name.starts_with(&prefix) && name.ends_with(".pyc") && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
         }
     }
     dirs.insert(pycache);

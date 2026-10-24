@@ -47,7 +47,7 @@ fn concurrent_installs() -> usize {
 /// Result of resolution: either a single-environment result or a universal
 /// (multi-environment) merged result.
 pub enum ResolveOut {
-    Single(ResolutionResult),
+    Single(Box<ResolutionResult>),
     Universal {
         entries: Vec<UniversalPackageEntry>,
         environments: Vec<String>,
@@ -105,7 +105,7 @@ pub fn resolve_from_config(
             ResolveError::Other(err) => err,
         })?;
         report_applied_fixes(&result, None);
-        return Ok((ResolveOut::Single(result), shared_client));
+        return Ok((ResolveOut::Single(Box::new(result)), shared_client));
     }
 
     let mut env_results: Vec<(String, ResolutionResult)> = Vec::new();
@@ -569,9 +569,6 @@ pub fn install_lockfile(
     let (link_cached_results, download_pipeline_results) = rt.block_on(async {
         let lnk_c = Arc::clone(&lnk_ns);
         let cached_link_wall = Arc::clone(&cached_link_wall_ns);
-        let assume_fresh = assume_fresh;
-        let install_workers = install_workers;
-
         let layout_cached = layout.clone();
         let policy_cached = startup_policy.clone();
         let cache_link_handle = tokio::task::spawn_blocking(move || {
@@ -606,8 +603,7 @@ pub fn install_lockfile(
         let pipeline_results: Vec<Result<String, (String, String)>> = if download_jobs.is_empty() {
             Vec::new()
         } else {
-            let assume_fresh_dl = assume_fresh_dl;
-            stream::iter(download_jobs.into_iter())
+            stream::iter(download_jobs)
                 .map(|job| {
                     let cl = client.clone();
                     let fb = fallback_index.to_string();
@@ -617,7 +613,6 @@ pub fn install_lockfile(
                     let dl_c = Arc::clone(&dl_ns);
                     let ext_c = Arc::clone(&ext_ns);
                     let lnk_c = Arc::clone(&lnk_ns);
-                    let assume_fresh_dl = assume_fresh_dl;
                     let policy = startup_policy.clone();
                     async move {
                         let dl_start = Instant::now();

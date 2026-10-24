@@ -194,7 +194,7 @@ fn read_filelist_manifest(archive_path: &Path) -> Option<Vec<PathBuf>> {
     let f = std::fs::File::open(manifest).ok()?;
     let paths: Vec<PathBuf> = BufReader::new(f)
         .lines()
-        .filter_map(|line| line.ok())
+        .map_while(Result::ok)
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .collect();

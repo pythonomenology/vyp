@@ -25,7 +25,7 @@ pub struct UniversalPackageEntry {
 pub fn parse_python_version_from_marker(marker: &str) -> Option<String> {
     let marker = marker.trim();
     // python_version == "3.8" or python_version=="3.8"
-    let rest = marker.strip_prefix("python_version")?.trim_start_matches(|c| c == ' ' || c == '=');
+    let rest = marker.strip_prefix("python_version")?.trim_start_matches([' ', '=']);
     let rest = rest.trim();
     let quoted = rest.strip_prefix('"')?.strip_suffix('"')?;
     if quoted.contains('"') {

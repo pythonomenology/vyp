@@ -180,7 +180,7 @@ pub fn install_wheel(
             }
         }
 
-        write_record(layout, di, &mut records)?;
+        write_record(layout, di, &records)?;
     }
 
     Ok(())
@@ -509,7 +509,7 @@ fn parse_wheel_record(record_path: &Path) -> std::collections::HashMap<String, (
 fn write_record(
     layout: &VenvLayout,
     dist_info: &Path,
-    records: &mut Vec<RecordEntry>,
+    records: &[RecordEntry],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let record_path = layout.site_packages.join(dist_info).join("RECORD");
     let record_rel = relative_to(&layout.site_packages, &record_path);

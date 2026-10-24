@@ -15,6 +15,9 @@ pub struct IndexConfig {
     pub explicit: bool,
 }
 
+/// Metadata providers for a resolution, and the router scoping named indexes.
+pub type Providers = (Vec<Box<dyn vyp_api::MetadataProvider>>, Arc<IndexRouter>);
+
 /// A per-package source routing entry.
 #[derive(Debug, Clone)]
 pub struct SourceEntry {
@@ -644,7 +647,7 @@ impl VypConfig {
         &self,
         torch_backend_override: Option<&str>,
         marker_env: Option<&MarkerEnvironment>,
-    ) -> miette::Result<(Vec<Box<dyn vyp_api::MetadataProvider>>, Arc<IndexRouter>)> {
+    ) -> miette::Result<Providers> {
         self.create_providers_with_client(torch_backend_override, marker_env, None)
     }
 
@@ -660,7 +663,7 @@ impl VypConfig {
         torch_backend_override: Option<&str>,
         marker_env: Option<&MarkerEnvironment>,
         shared_client: Option<reqwest::Client>,
-    ) -> miette::Result<(Vec<Box<dyn vyp_api::MetadataProvider>>, Arc<IndexRouter>)> {
+    ) -> miette::Result<Providers> {
         use crate::accelerator;
 
         let mut providers: Vec<Box<dyn vyp_api::MetadataProvider>> = Vec::new();
