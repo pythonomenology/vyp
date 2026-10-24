@@ -13,8 +13,10 @@ dashmap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ciborium = { workspace = true }
+postcard = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 zip = { workspace = true }
 sha2 = { workspace = true }
+libc = { workspace = true }
 tracing = { workspace = true }

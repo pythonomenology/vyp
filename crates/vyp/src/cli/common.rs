@@ -941,29 +941,13 @@ async fn download_wheel_job(
         }
     };
 
-    let response = vyp_index::auth::apply_auth(client.get(&url), &url)
-        .send()
-        .await?
-        .error_for_status()?;
-
     let tmp_path = tmp_dir.join(format!(
         "{}-{}.whl.tmp",
         name.to_lowercase().replace('-', "_"),
         version
     ));
-    let mut file = tokio::fs::File::create(&tmp_path).await?;
-    let mut hasher = Sha256::new();
-    let mut stream = response.bytes_stream();
 
-    use futures::TryStreamExt;
-    use tokio::io::AsyncWriteExt;
-    while let Some(chunk) = stream.try_next().await? {
-        hasher.update(&chunk);
-        file.write_all(&chunk).await?;
-    }
-    file.flush().await?;
-
-    let sha256 = format!("{:x}", hasher.finalize());
+    let sha256 = download_with_retries(client, &url, &tmp_path).await?;
 
     Ok(DownloadedWheel {
         pkg_name: name.to_string(),
@@ -971,6 +955,77 @@ async fn download_wheel_job(
         path: tmp_path,
         sha256,
     })
+}
+
+#[derive(Debug)]
+enum DownloadError {
+    Http(reqwest::Error),
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for DownloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Http(e) => write!(f, "{}", e),
+            Self::Io(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl std::error::Error for DownloadError {}
+
+/// Network trouble worth another attempt: connection, timeout, a cut-off
+/// body, rate limiting, or a server error. Never a 404 or a local I/O error.
+fn is_transient(e: &DownloadError) -> bool {
+    match e {
+        DownloadError::Http(e) => {
+            e.is_connect()
+                || e.is_timeout()
+                || e.is_body()
+                || e.is_request()
+                || e.status().is_some_and(|s| s == reqwest::StatusCode::TOO_MANY_REQUESTS || s.is_server_error())
+        }
+        DownloadError::Io(_) => false,
+    }
+}
+
+/// Download `url` to `path`, retrying transient failures with backoff: a
+/// dropped connection or a 5xx/429 on one of dozens of parallel downloads
+/// shouldn't fail the whole install.
+async fn download_with_retries(client: &reqwest::Client, url: &str, path: &Path) -> Result<String, DownloadError> {
+    const ATTEMPTS: u32 = 4;
+    let mut attempt = 0;
+    loop {
+        match fetch_to_file(client, url, path).await {
+            Ok(sha) => return Ok(sha),
+            Err(e) if attempt + 1 < ATTEMPTS && is_transient(&e) => {
+                attempt += 1;
+                tracing::debug!("retrying download of {} (attempt {}): {}", url, attempt + 1, e);
+                tokio::time::sleep(Duration::from_millis(250u64 << attempt)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Stream `url` into `path`, returning the SHA-256 of what was written.
+async fn fetch_to_file(client: &reqwest::Client, url: &str, path: &Path) -> Result<String, DownloadError> {
+    use futures::TryStreamExt;
+    use tokio::io::AsyncWriteExt;
+    let response = vyp_index::auth::apply_auth(client.get(url), url)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(DownloadError::Http)?;
+    let mut file = tokio::fs::File::create(path).await.map_err(DownloadError::Io)?;
+    let mut hasher = Sha256::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.try_next().await.map_err(DownloadError::Http)? {
+        hasher.update(&chunk);
+        file.write_all(&chunk).await.map_err(DownloadError::Io)?;
+    }
+    file.flush().await.map_err(DownloadError::Io)?;
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// Resolve wheel URL using normalized name and version directly.
@@ -1074,3 +1129,55 @@ fn find_wheel_url_html(
         .ok_or_else(|| format!("No compatible wheel found for version {} in HTML index", version).into())
 }
 
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Serve `responses` in order, one per connection.
+    async fn serve(responses: Vec<&'static str>) -> (String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        tokio::spawn(async move {
+            for response in responses {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                counter.fetch_add(1, Ordering::SeqCst);
+                let _ = sock.write_all(response.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (format!("http://{}/w.whl", addr), hits)
+    }
+
+    #[tokio::test]
+    async fn retries_server_errors_then_succeeds() {
+        let (url, hits) = serve(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc",
+        ])
+        .await;
+        let path = std::env::temp_dir().join(format!("vyp-dl-{}-ok", std::process::id()));
+        let sha = download_with_retries(&reqwest::Client::new(), &url, &path).await.unwrap();
+        assert_eq!(sha, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(std::fs::read(&path).unwrap(), b"abc");
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_client_errors() {
+        let (url, hits) = serve(vec![
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc",
+        ])
+        .await;
+        let path = std::env::temp_dir().join(format!("vyp-dl-{}-404", std::process::id()));
+        assert!(download_with_retries(&reqwest::Client::new(), &url, &path).await.is_err());
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+}

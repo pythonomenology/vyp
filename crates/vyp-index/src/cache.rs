@@ -62,21 +62,98 @@ struct CacheEntry {
 }
 
 /// Bumped when the stored file list changes meaning; older lists are refetched.
-/// 2: sdists and upload times are recorded.
-const VERSION_LIST_FORMAT: u32 = 2;
+/// 3: compact positional encoding (postcard) instead of CBOR.
+/// 4: per-environment views record the full list they were built from.
+const VERSION_LIST_FORMAT: u32 = 4;
 
+/// On-disk form of a version list. Version lists are by far the largest
+/// cache entries (every file of every release: megabytes for packages like
+/// pydantic-core) and are decoded on every warm run, so they use a compact
+/// positional encoding instead of self-describing CBOR. Positional means no
+/// serde `default`/`skip` attributes here: change the layout only together
+/// with [`VERSION_LIST_FORMAT`].
 #[derive(Serialize, Deserialize)]
 struct StoredVersionList {
-    #[serde(default)]
     format: u32,
-    versions: Vec<VypVersion>,
+    /// For a per-environment view: the modification time (ns) of the full
+    /// list it was derived from. 0 for a full list.
+    source_mtime: u128,
     timestamp: u64,
-    #[serde(default)]
     etag: Option<String>,
-    #[serde(default)]
     last_modified: Option<String>,
-    #[serde(default)]
-    wheel_info: HashMap<String, Vec<crate::in_memory_index::WheelInfo>>,
+    versions: Vec<String>,
+    files: Vec<(String, Vec<StoredFile>)>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredFile {
+    filename: String,
+    /// The URL, minus a trailing filename when `url_is_prefix`.
+    url: String,
+    url_is_prefix: bool,
+    has_metadata: bool,
+    requires_python: Option<String>,
+    yanked: bool,
+    hashes: Vec<(String, String)>,
+    upload_time: Option<i64>,
+}
+
+impl StoredFile {
+    fn from_wheel(w: crate::in_memory_index::WheelInfo) -> Self {
+        let (url, url_is_prefix) = match w.url.strip_suffix(w.filename.as_str()) {
+            Some(prefix) => (prefix.to_string(), true),
+            None => (w.url, false),
+        };
+        Self {
+            url,
+            url_is_prefix,
+            has_metadata: w.has_metadata,
+            requires_python: w.requires_python,
+            yanked: w.yanked,
+            hashes: w.hashes.into_iter().collect(),
+            upload_time: w.upload_time,
+            filename: w.filename,
+        }
+    }
+
+    fn into_wheel(self) -> crate::in_memory_index::WheelInfo {
+        let url = if self.url_is_prefix { self.url + &self.filename } else { self.url };
+        crate::in_memory_index::WheelInfo {
+            filename: self.filename,
+            url,
+            has_metadata: self.has_metadata,
+            requires_python: self.requires_python,
+            yanked: self.yanked,
+            hashes: self.hashes.into_iter().collect(),
+            upload_time: self.upload_time,
+        }
+    }
+}
+
+impl StoredVersionList {
+    fn read(path: &Path) -> Option<Self> {
+        let bytes = std::fs::read(path).ok()?;
+        let stored: Self = postcard::from_bytes(&bytes).ok()?;
+        (stored.format == VERSION_LIST_FORMAT).then_some(stored)
+    }
+
+    fn write(&self, path: &Path) -> io::Result<()> {
+        let bytes = postcard::to_stdvec(self).map_err(io::Error::other)?;
+        let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, path)
+    }
+
+    fn versions(&self) -> Vec<VypVersion> {
+        self.versions.iter().filter_map(|v| v.parse().ok()).collect()
+    }
+
+    fn wheel_info(self) -> HashMap<String, Vec<crate::in_memory_index::WheelInfo>> {
+        self.files
+            .into_iter()
+            .map(|(v, files)| (v, files.into_iter().map(StoredFile::into_wheel).collect()))
+            .collect()
+    }
 }
 
 /// Deserialize a CBOR blob from `path`, returning `None` on any error.
@@ -193,16 +270,98 @@ impl MetadataCache {
         &self,
         package: &str,
     ) -> Option<CachedVersionList> {
-        let stored: StoredVersionList = read_bin(&self.versions_path(package))?;
-        if stored.format < VERSION_LIST_FORMAT {
+        Self::read_versions_full(&self.versions_path(package))
+    }
+
+    /// Where a package's version list is cached. Read it with
+    /// [`MetadataCache::read_versions_full`] without holding the cache lock.
+    pub fn versions_file(&self, package: &str) -> PathBuf {
+        self.versions_path(package)
+    }
+
+    /// Where the per-environment view of a package's version list lives.
+    /// `env_key` identifies the environment's wheel tags.
+    pub fn env_versions_file(&self, package: &str, env_key: &str) -> PathBuf {
+        self.cache_dir.join(format!("versions-{}.{}.pc", package, env_key))
+    }
+
+    /// A fresh cached version list reduced to the files one environment can
+    /// use: wheels `compatible` accepts, plus sdists. A version left with no
+    /// file is dropped (no distribution of it could be installed here).
+    /// The view is stored at `view` and reused until the full list at `full`
+    /// changes, so warm runs decode a few KiB instead of every file of every
+    /// release for every platform.
+    pub fn read_versions_for_env(
+        full: &Path,
+        view: &Path,
+        compatible: impl Fn(&str) -> bool,
+    ) -> Option<CachedVersionList> {
+        let full_mtime = std::fs::metadata(full)
+            .and_then(|m| m.modified())
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        let now = Self::now();
+        if let Some(stored) = StoredVersionList::read(view).filter(|v| v.source_mtime == full_mtime) {
+            if now.saturating_sub(stored.timestamp) > VERSION_LIST_TTL_SECS {
+                return None;
+            }
+            let versions = stored.versions();
+            return Some((versions, stored.wheel_info()));
+        }
+
+        let mut stored = StoredVersionList::read(full)?;
+        if now.saturating_sub(stored.timestamp) > VERSION_LIST_TTL_SECS {
             return None;
         }
+        let mut emptied = std::collections::HashSet::new();
+        for (version, files) in &mut stored.files {
+            files.retain(|f| crate::version_filter::is_sdist(&f.filename) || compatible(&f.filename));
+            if files.is_empty() {
+                emptied.insert(version.clone());
+            }
+        }
+        stored.files.retain(|(_, files)| !files.is_empty());
+        stored.versions.retain(|v| !emptied.contains(v));
+        stored.source_mtime = full_mtime;
+        let _ = stored.write(view);
+        let versions = stored.versions();
+        Some((versions, stored.wheel_info()))
+    }
+
+    /// A fresh (unexpired) cached version list from `path`.
+    pub fn read_versions_full(path: &Path) -> Option<CachedVersionList> {
+        let stored = StoredVersionList::read(path)?;
         let now = Self::now();
         if now.saturating_sub(stored.timestamp) > VERSION_LIST_TTL_SECS {
             return None;
         }
-        debug!(package, "version list cache hit");
-        Some((stored.versions, stored.wheel_info))
+        let versions = stored.versions();
+        Some((versions, stored.wheel_info()))
+    }
+
+    /// Record an access to a cached entry and return the file holding it.
+    /// Read it with [`MetadataCache::read_entry`] after releasing the lock,
+    /// so concurrent lookups don't serialize on file I/O.
+    pub fn entry_path(&mut self, package: &str, version: &VypVersion) -> Option<PathBuf> {
+        let key = Self::cache_key(package, version);
+        let entry = self.index.entries.get_mut(&key)?;
+        entry.last_access = Self::now();
+        self.dirty = true;
+        Some(self.cache_dir.join(&entry.hash))
+    }
+
+    pub fn read_entry(path: &Path) -> Option<PackageMetadata> {
+        read_bin(path)
+    }
+
+    /// Drop an entry whose file turned out to be missing or unreadable.
+    pub fn forget(&mut self, package: &str, version: &VypVersion) {
+        let key = Self::cache_key(package, version);
+        warn!("dropping unreadable cache entry for {}", key);
+        self.remove_entry(&key);
+        self.mark_dirty();
     }
 
     /// Retrieve a stale version list together with its HTTP validators
@@ -212,19 +371,18 @@ impl MetadataCache {
         &self,
         package: &str,
     ) -> Option<CachedVersionListWithValidators> {
-        let stored: StoredVersionList = read_bin(&self.versions_path(package))?;
-        if stored.format < VERSION_LIST_FORMAT {
-            return None;
-        }
-        Some((stored.versions, stored.etag, stored.last_modified, stored.wheel_info))
+        let stored = StoredVersionList::read(&self.versions_path(package))?;
+        let versions = stored.versions();
+        let (etag, last_modified) = (stored.etag.clone(), stored.last_modified.clone());
+        Some((versions, etag, last_modified, stored.wheel_info()))
     }
 
     /// Refresh the timestamp on a stale version list (e.g. after a 304).
     pub fn refresh_versions_timestamp(&self, package: &str) {
         let path = self.versions_path(package);
-        let Some(mut stored) = read_bin::<StoredVersionList>(&path) else { return };
+        let Some(mut stored) = StoredVersionList::read(&path) else { return };
         stored.timestamp = Self::now();
-        let _ = write_bin(&path, &stored);
+        let _ = stored.write(&path);
     }
 
     /// Cache a version list with HTTP validators, wheel info, and a fresh TTL.
@@ -238,16 +396,20 @@ impl MetadataCache {
     ) {
         let stored = StoredVersionList {
             format: VERSION_LIST_FORMAT,
-            versions: versions.to_vec(),
+            source_mtime: 0,
             timestamp: Self::now(),
             etag,
             last_modified,
-            wheel_info,
+            versions: versions.iter().map(|v| v.to_string()).collect(),
+            files: wheel_info
+                .into_iter()
+                .map(|(v, files)| (v, files.into_iter().map(StoredFile::from_wheel).collect()))
+                .collect(),
         };
         if std::fs::create_dir_all(&self.cache_dir).is_err() {
             return;
         }
-        let _ = write_bin(&self.versions_path(package), &stored);
+        let _ = stored.write(&self.versions_path(package));
 
         self.evict_stale_version_lists();
     }
@@ -278,7 +440,7 @@ impl MetadataCache {
     }
 
     fn versions_path(&self, package: &str) -> PathBuf {
-        self.cache_dir.join(format!("versions-{}.bin", package))
+        self.cache_dir.join(format!("versions-{}.pc", package))
     }
 
     fn evict_stale_version_lists(&self) {
@@ -552,5 +714,66 @@ mod tests {
         assert_eq!(etag.as_deref(), Some("etag123"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn wheel(name: &str) -> crate::in_memory_index::WheelInfo {
+        crate::in_memory_index::WheelInfo {
+            filename: name.to_string(),
+            url: format!("https://files.example/{}", name),
+            has_metadata: true,
+            requires_python: None,
+            yanked: false,
+            hashes: [("sha256".to_string(), "ab".to_string())].into(),
+            upload_time: Some(1),
+        }
+    }
+
+    #[test]
+    fn version_list_round_trips_compactly() {
+        let dir = temp_cache_dir();
+        let cache = MetadataCache::new(dir.clone());
+        let versions = vec![VypVersion::from_parts(1, 0, 0)];
+        let info = HashMap::from([("1.0.0".to_string(), vec![wheel("p-1.0.0-py3-none-any.whl")])]);
+        cache.insert_versions("p", &versions, Some("e".into()), None, info);
+        let (v, w, etag) = {
+            let (v, etag, _, w) = cache.get_versions_with_validators("p").unwrap();
+            (v, w, etag)
+        };
+        assert_eq!(v, versions);
+        assert_eq!(etag.as_deref(), Some("e"));
+        assert_eq!(w["1.0.0"][0].url, "https://files.example/p-1.0.0-py3-none-any.whl");
+        assert_eq!(w["1.0.0"][0].hashes["sha256"], "ab");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn env_view_keeps_usable_files_and_follows_the_full_list() {
+        let dir = temp_cache_dir();
+        let cache = MetadataCache::new(dir.clone());
+        let v = |s: &str| s.parse::<VypVersion>().unwrap();
+        let info = HashMap::from([
+            ("1.0".to_string(), vec![wheel("p-1.0-cp313-cp313-macosx_11_0_arm64.whl"), wheel("p-1.0-cp313-cp313-win_amd64.whl")]),
+            ("2.0".to_string(), vec![wheel("p-2.0-cp313-cp313-win_amd64.whl")]),
+            ("3.0".to_string(), vec![wheel("p-3.0-cp313-cp313-win_amd64.whl"), wheel("p-3.0.tar.gz")]),
+        ]);
+        // 4.0 has no file information at all (e.g. from an HTML index).
+        cache.insert_versions("p", &[v("1.0"), v("2.0"), v("3.0"), v("4.0")], None, None, info);
+        let full = cache.versions_file("p");
+        let view = cache.env_versions_file("p", "test");
+        let mac = |f: &str| f.contains("macosx");
+
+        let (versions, files) = MetadataCache::read_versions_for_env(&full, &view, mac).unwrap();
+        assert_eq!(versions, vec![v("1.0"), v("3.0"), v("4.0")], "2.0 has nothing usable here");
+        assert_eq!(files["1.0"].len(), 1);
+        assert_eq!(files["3.0"][0].filename, "p-3.0.tar.gz");
+        assert!(view.exists());
+
+        // A refreshed full list replaces the view.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let info = HashMap::from([("5.0".to_string(), vec![wheel("p-5.0-cp313-cp313-macosx_11_0_arm64.whl")])]);
+        cache.insert_versions("p", &[v("5.0")], None, None, info);
+        let (versions, _) = MetadataCache::read_versions_for_env(&full, &view, mac).unwrap();
+        assert_eq!(versions, vec![v("5.0")]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

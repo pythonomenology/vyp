@@ -22,6 +22,9 @@ pub struct PlatformTags {
     python_set: HashSet<String>,
     abi_set: HashSet<String>,
     platform_set: HashSet<String>,
+    /// `(major, minor)` of a CPython target that accepts stable-ABI wheels:
+    /// `cp3Y-abi3` works on CPython 3.Z for every Y <= Z.
+    abi3_python: Option<(u32, u32)>,
 }
 
 impl PlatformTags {
@@ -36,8 +39,9 @@ impl PlatformTags {
         let platform_tags = build_platform_tags(&env.sys_platform, &env.platform_machine);
 
         let python_set = python_tags.iter().cloned().collect();
-        let abi_set = abi_tags.iter().cloned().collect();
+        let abi_set: HashSet<String> = abi_tags.iter().cloned().collect();
         let platform_set = platform_tags.iter().cloned().collect();
+        let abi3_python = abi_set.contains("abi3").then_some((major, minor));
 
         Self {
             python_tags,
@@ -46,6 +50,7 @@ impl PlatformTags {
             python_set,
             abi_set,
             platform_set,
+            abi3_python,
         }
     }
 
@@ -71,6 +76,27 @@ impl PlatformTags {
         }
     }
 
+    /// A short stable key for this tag set, for caching per-environment data.
+    pub fn fingerprint(&self) -> String {
+        let mut hash: u64 = 0xcbf29ce484222325;
+        let mut feed = |s: &str| {
+            for b in s.as_bytes().iter().chain(b"\0") {
+                hash ^= *b as u64;
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+        };
+        for list in [&self.python_tags, &self.abi_tags, &self.platform_tags] {
+            for tag in list {
+                feed(tag);
+            }
+            feed("|");
+        }
+        if let Some((major, minor)) = self.abi3_python {
+            feed(&format!("abi3:{}.{}", major, minor));
+        }
+        format!("{:016x}", hash)
+    }
+
     /// Check whether a wheel filename is compatible with this platform.
     /// Returns `true` for compatible wheels; `false` for incompatible or
     /// unparseable wheel filenames.
@@ -79,9 +105,28 @@ impl PlatformTags {
             return false;
         };
 
-        any_member(py_tag, &self.python_set)
-            && any_member(abi_tag, &self.abi_set)
-            && any_member(plat_tag, &self.platform_set)
+        self.python_abi_compatible(py_tag, abi_tag) && any_member(plat_tag, &self.platform_set)
+    }
+
+    /// Python and ABI tags are only meaningful as a pair: `cp39-abi3` runs
+    /// on CPython 3.13, but `cp39-cp39` doesn't. Each field may be a
+    /// compressed `.`-separated set.
+    fn python_abi_compatible(&self, py_tag: &str, abi_tag: &str) -> bool {
+        abi_tag.split('.').any(|abi| {
+            py_tag.split('.').any(|py| {
+                (self.python_set.contains(py) && self.abi_set.contains(abi))
+                    || (abi == "abi3" && self.is_abi3_python(py))
+            })
+        })
+    }
+
+    /// `cp3Y` with `2 <= Y <= minor`: the first stable-ABI release (3.2) up
+    /// to the target.
+    fn is_abi3_python(&self, py: &str) -> bool {
+        let Some((major, minor)) = self.abi3_python else { return false };
+        py.strip_prefix(&format!("cp{}", major))
+            .and_then(|m| m.parse::<u32>().ok())
+            .is_some_and(|m| (2..=minor).contains(&m))
     }
 
     /// Score a wheel for preference ordering. Higher is better; `0` for an
@@ -96,8 +141,18 @@ impl PlatformTags {
             return 0;
         };
 
+        if !self.python_abi_compatible(py_tag, abi_tag) {
+            return 0;
+        }
+        // An older `cp3Y-abi3` tag ranks below every exact python tag.
+        let py_rank = best_rank(py_tag, &self.python_tags).or_else(|| {
+            py_tag
+                .split('.')
+                .any(|py| self.is_abi3_python(py))
+                .then(|| self.python_tags.len() - 1)
+        });
         let (Some(py_r), Some(abi_r), Some(plat_r)) = (
-            best_rank(py_tag, &self.python_tags),
+            py_rank,
             best_rank(abi_tag, &self.abi_tags),
             best_rank(plat_tag, &self.platform_tags),
         ) else {
@@ -264,6 +319,9 @@ fn detect_macos_version() -> (u32, u32) {
                 return v;
             }
         }
+        if let Some(v) = sysctl_product_version().as_deref().and_then(parse_two_part) {
+            return v;
+        }
         let out = std::process::Command::new("sw_vers")
             .arg("-productVersion")
             .output();
@@ -278,6 +336,29 @@ fn detect_macos_version() -> (u32, u32) {
         }
         (11, 0)
     })
+}
+
+/// The macOS product version from `sysctl kern.osproductversion`, without
+/// spawning `sw_vers`.
+#[cfg(target_os = "macos")]
+fn sysctl_product_version() -> Option<String> {
+    let name = c"kern.osproductversion";
+    let mut buf = [0u8; 64];
+    let mut len = buf.len();
+    // SAFETY: `name` is NUL-terminated; `buf`/`len` describe a valid buffer.
+    let rc = unsafe {
+        libc::sysctlbyname(name.as_ptr(), buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0)
+    };
+    if rc != 0 || len == 0 {
+        return None;
+    }
+    let s = std::str::from_utf8(&buf[..len]).ok()?;
+    Some(s.trim_end_matches('\0').trim().to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn sysctl_product_version() -> Option<String> {
+    None
 }
 
 fn parse_two_part(s: &str) -> Option<(u32, u32)> {
@@ -526,6 +607,19 @@ mod tests {
         assert!(tags.is_compatible(
             "some_package-1.0.0-cp310-abi3-macosx_11_0_arm64.whl"
         ));
+    }
+
+    #[test]
+    fn older_abi3_wheels_are_compatible_but_not_older_cpython_abis() {
+        let tags = PlatformTags::from_env(&arm64_mac_env());
+        assert!(tags.is_compatible("ast_serialize-0.13.1-cp39-abi3-macosx_11_0_arm64.whl"));
+        assert!(tags.is_compatible("x-1.0-cp32-abi3-macosx_11_0_arm64.whl"));
+        assert!(!tags.is_compatible("x-1.0-cp39-cp39-macosx_11_0_arm64.whl"));
+        assert!(!tags.is_compatible("x-1.0-cp315-abi3-macosx_11_0_arm64.whl"), "abi3 from a newer CPython");
+        assert!(!tags.is_compatible("x-1.0-cp39-abi3-manylinux_2_17_x86_64.whl"));
+        let exact = tags.compatibility_score("x-1.0-cp310-cp310-macosx_11_0_arm64.whl");
+        let abi3 = tags.compatibility_score("x-1.0-cp39-abi3-macosx_11_0_arm64.whl");
+        assert!(abi3 > 0 && exact > abi3, "exact {} abi3 {}", exact, abi3);
     }
 
     #[test]

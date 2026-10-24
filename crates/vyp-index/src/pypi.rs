@@ -302,29 +302,41 @@ impl PyPIMetadataProvider {
         let marker_env = self.marker_env.clone();
         let counters = Arc::clone(&self.profile_counters);
         let pkg = normalized.to_string();
+        let tags = self.platform_tags.clone();
         let claim = VersionsClaim::new(Arc::clone(&self.index), normalized);
 
         self.runtime.spawn(async move {
             // Fills the slot with an error if this task ends without a result.
             let _claim = claim;
-            // Disk cache fast path (brief lock, no I/O, never held across .await).
-            {
+            // Disk cache fast path: the lock only yields the path, the read
+            // happens outside it.
+            let (versions_file, view_file) = {
                 let cache = disk_cache.lock().expect("poisoned");
-                if let Some((versions, stored_wheel_info)) = cache.get_versions_full(&pkg) {
-                    drop(cache);
-                    if let Ok(mut c) = counters.lock() { c.version_disk_hits += 1; }
-                    let wheel_info = stored_wheel_info.into_iter()
-                        .filter_map(|(v_str, wheels)| {
-                            v_str.parse::<VypVersion>().ok().map(|v| (v, wheels))
-                        })
-                        .collect();
-                    index.set_versions(&pkg, VersionsResult {
-                        versions,
-                        wheel_info,
-                        fetch_error: None,
-                    });
-                    return;
-                }
+                (cache.versions_file(&pkg), cache.env_versions_file(&pkg, &tags.fingerprint()))
+            };
+            if let Some((versions, stored_wheel_info)) =
+                crate::cache::MetadataCache::read_versions_for_env(&versions_file, &view_file, |f| {
+                    f.ends_with(".whl") && tags.is_compatible(f)
+                })
+            {
+                if let Ok(mut c) = counters.lock() { c.version_disk_hits += 1; }
+                let wheel_info: HashMap<VypVersion, Vec<WheelInfo>> = stored_wheel_info.into_iter()
+                    .filter_map(|(v_str, wheels)| {
+                        v_str.parse::<VypVersion>().ok().map(|v| (v, wheels))
+                    })
+                    .collect();
+                // Warm the likely picks' metadata now, in parallel with the
+                // other packages, rather than one at a time as the solver asks.
+                let candidates = speculative_candidates(&wheel_info);
+                index.set_versions(&pkg, VersionsResult {
+                    versions,
+                    wheel_info,
+                    fetch_error: None,
+                });
+                Self::prefetch_candidates(
+                    &pkg, candidates, false, &client, &index, &disk_cache, &semaphore, &marker_env, &counters,
+                ).await;
+                return;
             }
 
             // Stale cache — conditional request path.
@@ -460,7 +472,7 @@ impl PyPIMetadataProvider {
         self.runtime.spawn(async move {
             // Fills the slot with an error if this task ends without a result.
             let _claim = claim;
-            let cached = disk_cache.lock().expect("poisoned").get(&pkg, &ver);
+            let cached = cached_metadata(&disk_cache, &pkg, &ver);
 
             if let Some(cached_meta) = cached {
                 if let Ok(mut c) = counters.lock() { c.metadata_disk_hits += 1; }
@@ -551,20 +563,7 @@ impl PyPIMetadataProvider {
             return;
         };
 
-        let mut candidates: Vec<(VypVersion, String)> = result.wheel_info.iter()
-            .filter_map(|(v, wheels)| {
-                wheels.iter().find(|w| w.has_metadata)
-                    .map(|w| (v.clone(), w.url.clone()))
-            })
-            .collect();
-        candidates.sort_by(|(a, _), (b, _)| b.cmp(a));
-
-        // Speculatively prefetch metadata only for the few most-likely picks
-        // (highest versions) rather than the top 5. This trades a little extra
-        // latency on heavily-constrained resolves for far less wasted bandwidth
-        // and cache churn — the on-demand path covers any miss. Tunable via
-        // `VYP_PREFETCH_DEPTH`.
-        candidates.truncate(speculative_prefetch_depth());
+        let candidates = speculative_candidates(&result.wheel_info);
 
         let vers_for_cache = result.versions.clone();
         let wheel_info_for_cache: HashMap<String, Vec<WheelInfo>> = result.wheel_info.iter()
@@ -581,14 +580,39 @@ impl PyPIMetadataProvider {
             });
         }
 
+        Self::prefetch_candidates(
+            pkg, candidates, true, client, index, disk_cache, semaphore, marker_env, counters,
+        ).await;
+    }
+
+    /// Fetch metadata for the likely picks of a package: from the disk cache
+    /// when present, otherwise (with `network`) via PEP 658. Warm runs pass
+    /// `network = false`, so a guess never costs a request; the solver
+    /// fetches on demand what it actually needs.
+    #[allow(clippy::too_many_arguments)]
+    async fn prefetch_candidates(
+        pkg: &str,
+        candidates: Vec<(VypVersion, String)>,
+        network: bool,
+        client: &reqwest::Client,
+        index: &Arc<InMemoryIndex>,
+        disk_cache: &Arc<Mutex<crate::cache::MetadataCache>>,
+        semaphore: &Arc<Semaphore>,
+        marker_env: &MarkerEnvironment,
+        counters: &Arc<Mutex<ProfileCounters>>,
+    ) {
         for (version, wheel_url) in candidates {
+            if index.try_get_metadata(pkg, &version).is_some() {
+                continue;
+            }
+            let cached_meta = cached_metadata(disk_cache, pkg, &version);
+            if cached_meta.is_none() && !network {
+                continue;
+            }
             if !index.register_metadata(pkg, &version) {
                 continue;
             }
             let claim = MetadataClaim::new(Arc::clone(index), pkg, &version);
-            let cached_meta = {
-                disk_cache.lock().expect("poisoned").get(pkg, &version)
-            };
             if let Some(cached_meta) = cached_meta {
                 if let Ok(mut c) = counters.lock() { c.metadata_disk_hits += 1; }
                 index.set_metadata(pkg, &version, MetadataResult {
@@ -620,16 +644,20 @@ impl PyPIMetadataProvider {
                             fetch_error: None,
                         });
                         let v = version.clone();
-                        tokio::task::spawn_blocking(move || {
+                        // Awaited so the entry is persisted before exit;
+                        // the solver already has the result.
+                        let _ = tokio::task::spawn_blocking(move || {
                             cache.lock().expect("poisoned")
                                 .insert(&p, &v, &meta);
-                        });
+                        })
+                        .await;
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        // Never record a failed fetch as "no dependencies".
                         idx.set_metadata(&p, &version, MetadataResult {
                             dependencies: Vec::new(),
                             full_metadata: None,
-                            fetch_error: None,
+                            fetch_error: Some(format!("metadata fetch for {}=={} failed: {}", p, version, e)),
                         });
                     }
                 }
@@ -985,6 +1013,40 @@ fn should_include_requirement(req: &Requirement, env: &MarkerEnvironment) -> boo
 
 /// Number of top candidate versions to speculatively prefetch metadata for.
 /// Defaults to 2; override with `VYP_PREFETCH_DEPTH` (clamped to 1..=10).
+/// The few versions of a package most likely to be picked (the highest ones
+/// with PEP 658 metadata), with their wheel URLs. Prefetching only these
+/// trades a little latency on heavily constrained resolves for far less
+/// wasted bandwidth; the on-demand path covers any miss. Tunable via
+/// `VYP_PREFETCH_DEPTH`.
+fn speculative_candidates(wheel_info: &HashMap<VypVersion, Vec<WheelInfo>>) -> Vec<(VypVersion, String)> {
+    let mut candidates: Vec<(VypVersion, String)> = wheel_info
+        .iter()
+        .filter_map(|(v, wheels)| {
+            wheels
+                .iter()
+                .find(|w| w.has_metadata && w.filename.ends_with(".whl"))
+                .map(|w| (v.clone(), w.url.clone()))
+        })
+        .collect();
+    candidates.sort_by(|(a, _), (b, _)| b.cmp(a));
+    candidates.truncate(speculative_prefetch_depth());
+    candidates
+}
+
+/// Cached metadata, read without holding the cache lock.
+fn cached_metadata(
+    disk_cache: &Mutex<crate::cache::MetadataCache>,
+    pkg: &str,
+    version: &VypVersion,
+) -> Option<PackageMetadata> {
+    let path = disk_cache.lock().expect("poisoned").entry_path(pkg, version)?;
+    let meta = crate::cache::MetadataCache::read_entry(&path);
+    if meta.is_none() {
+        disk_cache.lock().expect("poisoned").forget(pkg, version);
+    }
+    meta
+}
+
 fn speculative_prefetch_depth() -> usize {
     std::env::var("VYP_PREFETCH_DEPTH")
         .ok()
@@ -1189,7 +1251,7 @@ impl MetadataProvider for PyPIMetadataProvider {
 
             self.runtime.spawn(async move {
                 let _claim = claim;
-                if let Some(cached_meta) = cache.lock().expect("poisoned").get(&pkg, &ver) {
+                if let Some(cached_meta) = cached_metadata(&cache, &pkg, &ver) {
                     idx.set_metadata(&pkg, &ver, MetadataResult {
                         dependencies: cached_meta.dependencies.clone(),
                         full_metadata: Some(cached_meta),

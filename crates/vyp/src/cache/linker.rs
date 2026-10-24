@@ -63,7 +63,31 @@ pub fn install_wheel(
     let mut created_dirs: HashSet<PathBuf> = HashSet::new();
     let mut records: Vec<RecordEntry> = Vec::new();
 
+    // Whole package directories the venv doesn't have yet are cloned in one
+    // call each; only their RECORD entries are needed below.
+    let cloned = clone_top_level_dirs(archive_dir, &files, layout, data_dir.as_deref());
+
     for rel in &files {
+        if !cloned.is_empty() {
+            if let Some(top) = rel.components().next() {
+                if cloned.contains(top.as_os_str()) {
+                    let rel_key = rel.to_string_lossy().replace('\\', "/");
+                    let is_wheel_record = dist_info
+                        .as_ref()
+                        .is_some_and(|di| rel_key == format!("{}/RECORD", di.to_string_lossy()));
+                    if is_wheel_record {
+                        continue;
+                    }
+                    if let Some((hash, size)) = wheel_record.get(&rel_key) {
+                        records.push(RecordEntry { rel: rel_key, hash: hash.clone(), size: *size });
+                    } else if let Some(entry) = record_entry(layout, &layout.site_packages.join(rel))? {
+                        records.push(entry);
+                    }
+                    continue;
+                }
+            }
+        }
+
         let source = archive_dir.join(rel);
         if source.is_dir() {
             continue;
@@ -196,6 +220,75 @@ pub fn install_from_archive(
         place_file(&source, &target, assume_fresh)?;
     }
     Ok(())
+}
+
+/// Clone each top-level directory of the wheel that installs into
+/// site-packages and doesn't exist there yet, with one `clonefile(2)` per
+/// directory tree instead of one per file. Each clone goes to a temporary
+/// name and is renamed into place, so a concurrent install of another
+/// package sharing the directory (a namespace package) falls back to the
+/// per-file merge instead of racing. Returns the names that were cloned.
+#[cfg(target_os = "macos")]
+fn clone_top_level_dirs(
+    archive_dir: &Path,
+    files: &[PathBuf],
+    layout: &VenvLayout,
+    data_dir: Option<&Path>,
+) -> HashSet<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    const CLONE_NOFOLLOW: u32 = 0x0001;
+
+    let mut cloned = HashSet::new();
+    let tops: HashSet<&std::ffi::OsStr> = files
+        .iter()
+        .filter(|f| f.components().count() > 1)
+        .filter_map(|f| f.components().next().map(|c| c.as_os_str()))
+        .filter(|top| data_dir.is_none_or(|d| d.as_os_str() != *top))
+        .collect();
+    if tops.is_empty() || std::fs::create_dir_all(&layout.site_packages).is_err() {
+        return cloned;
+    }
+    for top in tops {
+        let target = layout.site_packages.join(top);
+        if target.symlink_metadata().is_ok() {
+            continue;
+        }
+        let tmp = layout.site_packages.join(format!(
+            ".vyp-clone-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let (Ok(src), Ok(dst)) = (
+            std::ffi::CString::new(archive_dir.join(top).as_os_str().as_bytes()),
+            std::ffi::CString::new(tmp.as_os_str().as_bytes()),
+        ) else {
+            continue;
+        };
+        // SAFETY: both arguments are valid NUL-terminated paths.
+        if unsafe { libc::clonefile(src.as_ptr(), dst.as_ptr(), CLONE_NOFOLLOW) } != 0 {
+            // Different volume, not APFS, or similar: install file by file.
+            let _ = std::fs::remove_dir_all(&tmp);
+            continue;
+        }
+        if std::fs::rename(&tmp, &target).is_ok() {
+            cloned.insert(top.to_os_string());
+        } else {
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+    }
+    cloned
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clone_top_level_dirs(
+    _archive_dir: &Path,
+    _files: &[PathBuf],
+    _layout: &VenvLayout,
+    _data_dir: Option<&Path>,
+) -> HashSet<std::ffi::OsString> {
+    HashSet::new()
 }
 
 fn ensure_parent(
@@ -599,5 +692,56 @@ ignored = x:y
         let base = Path::new("/venv/lib/python3.11/site-packages");
         let target = Path::new("/venv/bin/black");
         assert_eq!(relative_to(base, target), "../../../bin/black");
+    }
+
+    fn fake_wheel(root: &Path, name: &str, files: &[&str]) -> (PathBuf, Vec<PathBuf>) {
+        let dir = root.join(format!("{}-archive", name));
+        let dist_info = format!("{}-1.0.dist-info", name);
+        let mut list = Vec::new();
+        let mut record = String::new();
+        for f in files.iter().copied().chain([format!("{}/METADATA", dist_info).as_str()]) {
+            let p = dir.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, f).unwrap();
+            record.push_str(&format!("{},sha256=x,{}\n", f, f.len()));
+            list.push(PathBuf::from(f));
+        }
+        let rec = format!("{}/RECORD", dist_info);
+        record.push_str(&format!("{},,\n", rec));
+        std::fs::write(dir.join(&rec), record).unwrap();
+        list.push(PathBuf::from(rec));
+        (dir, list)
+    }
+
+    #[test]
+    fn installs_whole_trees_and_merges_shared_directories() {
+        let root = std::env::temp_dir().join(format!("vyp-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let layout = VenvLayout {
+            root: root.join("venv"),
+            site_packages: root.join("venv/lib/python3.13/site-packages"),
+            scripts: root.join("venv/bin"),
+            include: root.join("venv/include"),
+            python_exe: root.join("venv/bin/python"),
+            python_version: "3.13".into(),
+            relocatable: false,
+        };
+        let (a, a_files) = fake_wheel(&root, "a", &["ns/a/__init__.py", "ns/a/deep/mod.py", "a_top.py"]);
+        let (b, b_files) = fake_wheel(&root, "b", &["ns/b/__init__.py"]);
+        install_wheel(&a, &layout, Some(&a_files), true, false).unwrap();
+        install_wheel(&b, &layout, Some(&b_files), false, false).unwrap();
+
+        let sp = &layout.site_packages;
+        for f in ["ns/a/__init__.py", "ns/a/deep/mod.py", "a_top.py", "ns/b/__init__.py"] {
+            assert!(sp.join(f).is_file(), "{} missing", f);
+        }
+        let record = std::fs::read_to_string(sp.join("a-1.0.dist-info/RECORD")).unwrap();
+        assert!(record.contains("ns/a/deep/mod.py,sha256=x,"), "{}", record);
+        assert!(record.contains("a-1.0.dist-info/INSTALLER"), "{}", record);
+        assert!(std::fs::read_dir(sp).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with(".vyp-clone")));
+        // Writing into the venv must not touch the cached archive.
+        std::fs::write(sp.join("ns/a/__init__.py"), "changed").unwrap();
+        assert_eq!(std::fs::read_to_string(a.join("ns/a/__init__.py")).unwrap(), "ns/a/__init__.py");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

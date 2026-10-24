@@ -189,7 +189,9 @@ impl MarkerEnvironment {
         // Resolve the interpreter path without spawning a subprocess.
         // Try canonicalize first, then fall back to PATH lookup.
         let real = std::path::Path::new(python);
-        let resolved = if real.is_absolute() {
+        // A path (absolute, or relative like `./.venv/bin/python`) is used as
+        // is; only a bare command name is looked up on PATH.
+        let resolved = if real.is_absolute() || real.components().count() > 1 {
             std::fs::canonicalize(real).ok()
         } else {
             std::env::var_os("PATH").and_then(|paths| {

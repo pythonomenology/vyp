@@ -72,14 +72,28 @@ vyp is built in Rust with fully parallel, lazy metadata fetching, a compact
 content-addressed cache, and a two-watched-literals PubGrub core. It is **orders
 of magnitude faster than pip** and **competitive with uv**.
 
-In the repository's 20-dependency benchmark (71 packages resolved), warm/cached
-resolution runs in roughly **100 ms** on our hardware — faster than `uv`'s
-equivalent offline resolve — and cold resolution is on par. Numbers are
-network- and machine-dependent; reproduce them yourself:
+The repository's 20-dependency benchmark (69 packages, identical versions from
+both tools) on an Apple M2, macOS 26, CPython 3.13, against uv 0.13.0:
+
+| Warm caches | vyp | uv |
+|---|---|---|
+| Resolve (`vyp lock` / `uv pip compile`) | 31 ms | 32 ms |
+| Install a lock into a fresh venv (`vyp sync --lockfile` / `uv sync --frozen`) | 199 ms | 270 ms |
+| End to end, no lock or venv (`vyp sync` / `uv sync`) | 258 ms | 329 ms |
+
+`uv lock`, which resolves for every platform at once, takes 54 ms on the same
+project. With empty caches both tools are bound by the network: resolve and
+install are each within noise of uv, and end to end vyp is about 10% slower
+because it doesn't yet start downloads during resolution.
+
+Installs on APFS clone whole package directories in one `clonefile(2)` call;
+on other filesystems vyp links file by file, and those numbers haven't been
+measured here. Results are machine- and network-dependent; reproduce them
+yourself (needs hyperfine and uv):
 
 ```bash
 benchmarks/install-20-packages/run_benchmark.sh          # warm
-benchmarks/install-20-packages/run_benchmark.sh --cold   # cold
+benchmarks/install-20-packages/run_benchmark.sh --cold   # empty caches
 ```
 
 uv remains the more mature general-purpose tool (universal resolution, a large

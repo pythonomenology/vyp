@@ -22,6 +22,12 @@ Benefits:
 - **No collisions**: Different packages/versions produce different hashes.
 - **Simple lookup**: Hash the key, read the file.
 
+## Version Lists
+
+Each package's index page (every release and every file of it, with hashes, `Requires-Python` and upload times) is cached as `versions-<package>.pc` for 5 minutes, then revalidated with an HTTP conditional request. Each index has its own directory, so one index's answer for a package is never served for another.
+
+These lists are the largest cache entries (megabytes for packages that ship wheels for many platforms), so they use a compact positional encoding. Next to each one, vyp keeps a **per-environment view**, `versions-<package>.<tags>.pc`: the same list reduced to the wheels the target interpreter and platform can install, plus sdists. Releases with nothing installable are left out. Warm resolves read the views, a few KiB each, instead of decoding every file for every platform. A view is rebuilt whenever the full list it came from changes.
+
 ## LRU Eviction Policy
 
 An in-memory index tracks:
