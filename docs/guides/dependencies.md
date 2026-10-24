@@ -138,6 +138,58 @@ vyp lock --name dev
 
 This creates `pylock.dev.toml` instead of `pylock.toml`. See [Lock Files](lockfiles.md) for details.
 
+## Local, Editable and Git Dependencies
+
+Point a dependency at a source tree or a git repository in `[tool.vyp.sources]`:
+
+```toml
+[project]
+dependencies = ["lib-b", "lib-c", "tool-d"]
+
+[tool.vyp.sources]
+lib-b = [{ path = "../lib-b", editable = true }]
+lib-c = [{ git = "https://github.com/org/lib-c", tag = "v1.4.0" }]
+tool-d = [{ git = "https://github.com/org/monorepo", rev = "3f2a9c1", subdirectory = "tools/d" }]
+```
+
+or as a PEP 508 direct reference in the dependency list:
+
+```toml
+dependencies = [
+    "lib-c @ git+https://github.com/org/lib-c@v1.4.0",
+    "lib-e @ file:///opt/src/lib-e",
+]
+```
+
+| Key | Description |
+|-----|-------------|
+| `path` | A source tree, relative to `pyproject.toml`. |
+| `editable` | With `path`: install in editable mode (PEP 660), so edits take effect without reinstalling. |
+| `git` | A repository URL (anything `git clone` accepts). |
+| `rev` / `tag` / `branch` | What to check out (default: the remote's HEAD). |
+| `subdirectory` | The package's directory inside the repository. |
+
+vyp reads each tree's metadata before resolving: from `[project]` directly when name, version and dependencies are static, otherwise by asking its build backend. Git references are resolved to a commit, recorded in the lock (`[packages.vcs]` with `commit-id`), and installs check out exactly that commit. Path dependencies are recorded as `[packages.directory]` relative to the project.
+
+Repositories are cloned once into the cache and fetched on later locks, using your `git`, so SSH keys and credential helpers work as usual.
+
+## Source Distributions
+
+When a release has no wheel for your platform, vyp can build its sdist with the backend it declares (PEP 517), in an isolated build environment. Build requirements are installed from wheels only.
+
+```toml
+[tool.vyp]
+sdists = "fallback"   # "never", "fallback" (default) or "allow"
+```
+
+| Value | Behavior |
+|-------|----------|
+| `never` | Only versions with a compatible wheel are considered. |
+| `fallback` | Versions that need a build are considered only for a package with no wheel-installable version at all. A newer release missing wheels for your platform never triggers a build when an older release installs from a wheel. |
+| `allow` | Sdist-only versions compete like any other; the newest wins. |
+
+During resolution, an sdist's dependencies come from its `PKG-INFO` when it declares them statically (Metadata-Version 2.2+, PEP 643). Otherwise vyp asks the build backend (`prepare_metadata_for_build_wheel`). Built wheels are cached per sdist hash and interpreter, and build environments are reused across builds with the same requirements. Set `VYP_BUILD_VERBOSE=1` to see backend output.
+
 ## Workflow Summary
 
 | Task | Command |

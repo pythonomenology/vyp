@@ -42,6 +42,8 @@ vyp lock [OPTIONS]
 | `--output` | `-o` | path | `pylock.toml` | Output lock file path. |
 | `--name` | `-n` | string | — | Named lock file; creates `pylock.<name>.toml` (overrides `--output`). |
 | `--torch-backend` | — | string | — | PyTorch accelerator backend. |
+| `--exclude-newer` | — | string | — | Ignore files uploaded after a date, timestamp or duration ago (`VYP_EXCLUDE_NEWER`). |
+| `--script` | — | path | — | Lock a PEP 723 script into a `# /// pylock` block in the script. |
 
 ---
 
@@ -59,6 +61,57 @@ vyp install [OPTIONS]
 | `--venv` | — | path | — | Target virtual environment path (auto-detected if not specified). |
 | `--dry-run` | — | flag | `false` | Print what would be installed without installing. |
 | `--torch-backend` | — | string | — | PyTorch accelerator backend. |
+
+---
+
+### vyp venv
+
+Create a virtual environment, or check one against what it was built from.
+
+```bash
+vyp venv [PATH] [OPTIONS]
+```
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--python` | `-p` | string | — | Interpreter: version, specifier or path. |
+| `--relocatable` | — | flag | `false` | Scripts and activation locate the environment relative to themselves. |
+| `--clear` | — | flag | `false` | Replace an existing environment. |
+| `--prompt` | — | string | directory name | Prompt shown when activated. |
+| `--system-site-packages` | — | flag | `false` | Give access to the base interpreter's packages. |
+| `--no-python-downloads` | — | flag | `false` | Don't download an interpreter when none matches. |
+| `--check` | — | flag | `false` | Report drift (stale interpreter, other host, changed packages); exits non-zero if any. |
+
+---
+
+### vyp python
+
+```bash
+vyp python install [VERSION]
+vyp python list
+vyp python find [REQUEST]
+vyp python uninstall VERSION
+vyp python dir
+```
+
+See [Python Interpreters](../guides/python.md).
+
+---
+
+### vyp run
+
+Run a PEP 723 script in an environment built from its inline metadata, or a command in the project environment.
+
+```bash
+vyp run [OPTIONS] TARGET [ARGS]...
+```
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--with` | — | string (repeatable) | — | Extra requirements for a script. |
+| `--python` | `-p` | string | — | Interpreter for a script environment. |
+
+See [Single-File Scripts](../guides/scripts.md).
 
 ---
 

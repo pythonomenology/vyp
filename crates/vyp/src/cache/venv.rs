@@ -18,6 +18,9 @@ pub struct VenvLayout {
     /// bytecode/headers paths and diagnostics.
     #[allow(dead_code)]
     pub python_version: String,
+    /// Created with `relocatable = true` in `pyvenv.cfg`: scripts locate the
+    /// interpreter relative to themselves instead of by absolute path.
+    pub relocatable: bool,
 }
 
 impl VenvLayout {
@@ -47,6 +50,7 @@ impl VenvLayout {
                 include: root.join("Include"),
                 python_exe: root.join("Scripts").join("python.exe"),
                 python_version: detect_windows_python_version(root),
+                relocatable: read_pyvenv_cfg(root).get("relocatable").is_some_and(|v| v == "true"),
             });
         }
 
@@ -79,7 +83,24 @@ impl VenvLayout {
             include: root.join("include"),
             python_exe: root.join("bin").join("python"),
             python_version,
+            relocatable: read_pyvenv_cfg(root).get("relocatable").is_some_and(|v| v == "true"),
         })
+    }
+
+    /// The interpreter line(s) that start a generated or rewritten script.
+    ///
+    /// A relocatable venv, or an interpreter path a kernel can't put in a
+    /// `#!` line (too long, or containing spaces), gets a `/bin/sh` header
+    /// that re-executes the script under the right Python.
+    pub fn script_header(&self) -> String {
+        if self.relocatable {
+            return "#!/bin/sh\n'''exec' \"$(dirname -- \"$(realpath -- \"$0\")\")\"/'python' \"$0\" \"$@\"\n' '''\n".to_string();
+        }
+        let python = self.python_exe.display().to_string();
+        if python.len() > 127 || python.contains(' ') {
+            return format!("#!/bin/sh\n'''exec' '{}' \"$0\" \"$@\"\n' '''\n", python.replace('\'', "'\\''"));
+        }
+        format!("#!{}\n", python)
     }
 
     /// Map a wheel `*.data/<scheme>/...` payload to its destination directory.
@@ -94,6 +115,16 @@ impl VenvLayout {
             _ => self.site_packages.clone(),
         }
     }
+}
+
+/// `key = value` pairs from a venv's `pyvenv.cfg`.
+pub fn read_pyvenv_cfg(root: &Path) -> std::collections::HashMap<String, String> {
+    std::fs::read_to_string(root.join("pyvenv.cfg"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .collect()
 }
 
 fn resolve_venv_root(venv: Option<&Path>) -> miette::Result<PathBuf> {

@@ -122,6 +122,12 @@ pub trait MetadataProvider: Send + Sync + Debug {
         })
     }
 
+    /// The source distribution to build for a resolved package+version that
+    /// has no compatible wheel. Default: none.
+    fn sdist_dist(&self, _package: &str, _version: &VypVersion) -> Option<WheelDist> {
+        None
+    }
+
     /// Return profiling counters (disk hits, 304s, network fetches, etc.).
     /// Only populated when `VYP_PROFILE=1`. Default is empty.
     fn profile_data(&self) -> HashMap<String, usize> {

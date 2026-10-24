@@ -7,7 +7,7 @@ use vyp_core::{ResolveProgress, ResolveTiming};
 
 use crate::config::settings::VypConfig;
 use crate::lock::lockfile::LockFile;
-use super::common::{install_lockfile, resolve_from_config, InstallTiming, ResolveOut};
+use super::common::{install_lockfile, resolve_from_config, target_venv, InstallOptions, InstallTiming, ResolveOut};
 
 #[derive(Args)]
 pub struct InstallArgs {
@@ -34,6 +34,11 @@ pub struct InstallArgs {
     /// PyTorch accelerator backend (auto, cpu, cu126, cu128, cu130, rocm6, xpu)
     #[arg(long)]
     pub torch_backend: Option<String>,
+
+    /// Ignore distributions uploaded after this date, timestamp or duration
+    /// ago (e.g. 2026-01-31, P7D, "7 days"). Overrides `exclude-newer`.
+    #[arg(long, env = "VYP_EXCLUDE_NEWER")]
+    pub exclude_newer: Option<String>,
 }
 
 pub fn run(args: InstallArgs) -> miette::Result<()> {
@@ -47,14 +52,24 @@ pub fn run(args: InstallArgs) -> miette::Result<()> {
             ));
         }
         let lockfile = LockFile::read_from_file(lockfile_path)?;
-        let install_timing = install_lockfile(&lockfile, args.venv.as_deref(), args.dry_run, None, None)?;
+        let config = if args.project.exists() { VypConfig::from_file(&args.project)? } else { VypConfig::default() };
+        let layout = target_venv(&config, args.venv.as_deref())?;
+        let install_timing = install_lockfile(&lockfile, &layout, &InstallOptions {
+            dry_run: args.dry_run,
+            startup: config.startup_files.clone(),
+            lock_dir: lockfile_path.parent().map(|p| p.to_path_buf()),
+            ..Default::default()
+        })?;
+        if !args.dry_run {
+            crate::env::provenance::record_install(&layout, &lockfile)?;
+        }
         if profiling {
             print_profile(None, install_timing.as_ref());
         }
         return Ok(());
     }
 
-    let config = if args.project.exists() {
+    let mut config = if args.project.exists() {
         VypConfig::from_file(&args.project)?
     } else if args.packages.is_empty() {
         return Err(miette::miette!(
@@ -64,6 +79,9 @@ pub fn run(args: InstallArgs) -> miette::Result<()> {
     } else {
         VypConfig::default()
     };
+    if let Some(cutoff) = &args.exclude_newer {
+        config.set_exclude_newer(cutoff)?;
+    }
 
     let extra_reqs: Vec<Requirement> = args
         .packages
@@ -73,6 +91,9 @@ pub fn run(args: InstallArgs) -> miette::Result<()> {
                 .map_err(|e| miette::miette!("Invalid requirement '{}': {}", s, e))
         })
         .collect::<miette::Result<Vec<_>>>()?;
+
+    let layout = target_venv(&config, args.venv.as_deref())?;
+    config.target_python = Some(layout.python_exe.clone());
 
     let is_tty = std::io::stderr().is_terminal();
     let start = std::time::Instant::now();
@@ -121,23 +142,28 @@ pub fn run(args: InstallArgs) -> miette::Result<()> {
             LockFile::from_resolution(result),
             result.timing.clone(),
         ),
-        ResolveOut::Universal { entries, environments, errata_feeds } => (
+        ResolveOut::Universal { entries, environments, errata_feeds, exclude_newer } => (
             LockFile::from_universal_resolution(
                 entries,
                 environments,
                 config.requires_python.as_deref(),
                 errata_feeds,
+                *exclude_newer,
             ),
             None,
         ),
     };
-    let install_timing = install_lockfile(
-        &lockfile,
-        args.venv.as_deref(),
-        args.dry_run,
-        Some(&config.index_url),
-        Some(shared_client),
-    )?;
+    let install_timing = install_lockfile(&lockfile, &layout, &InstallOptions {
+        dry_run: args.dry_run,
+        default_index: Some(config.index_url.clone()),
+        client: Some(shared_client),
+        startup: config.startup_files.clone(),
+        lock_dir: config.project_dir.clone(),
+        ..Default::default()
+    })?;
+    if !args.dry_run {
+        crate::env::provenance::record_install(&layout, &lockfile)?;
+    }
 
     if profiling {
         print_profile(resolve_timing.as_ref(), install_timing.as_ref());

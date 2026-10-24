@@ -25,11 +25,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls", "http2", "charset", "macos-system-configuration", "gzip", "brotli", "stream"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 miette = { version = "7", features = ["fancy"] }
 libloading = "0.8"
 zip = "2"
 flate2 = "1"
+tar = "0.4"
 ciborium = "0.2"
 sha2 = "0.10"
 futures = "0.3"

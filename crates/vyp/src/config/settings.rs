@@ -59,6 +59,43 @@ pub struct VypConfig {
     pub inherit_overrides: InheritOverrides,
     /// Directory containing the pyproject.toml this config was read from.
     pub project_dir: Option<PathBuf>,
+    /// Preferred interpreter for the project environment (`python = "3.12"`).
+    pub python: Option<String>,
+    /// Interpreter to resolve for. Set by commands that know their target
+    /// environment; otherwise the project's `.venv` or a matching interpreter.
+    pub target_python: Option<PathBuf>,
+    /// What to do with packages that ship code run at interpreter startup.
+    pub startup_files: crate::cache::startup::StartupPolicy,
+    /// Ignore distributions uploaded after a cutoff.
+    pub exclude_newer: vyp_index::ExcludeNewer,
+    /// When versions that need an sdist build are considered.
+    pub sdists: vyp_index::SdistPolicy,
+    /// How resolution obtains metadata for sdists without static metadata.
+    pub sdist_builder: Option<SdistBuilderHook>,
+    /// Packages whose pre-releases are allowed whatever `pre-releases` says.
+    pub pre_release_packages: Vec<String>,
+    /// Path and git sources, by declared package name.
+    pub local_sources: Vec<(String, crate::build::sources::LocalSource)>,
+}
+
+#[derive(Clone)]
+pub struct SdistBuilderHook(pub vyp_index::sdist::SdistMetadataBuilder);
+
+impl std::fmt::Debug for SdistBuilderHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SdistBuilderHook")
+    }
+}
+
+/// Parse an `exclude-newer` value: an RFC 3339 timestamp or date, or a
+/// duration back from now (`P7D`, `7 days`).
+pub fn parse_cutoff(s: &str) -> miette::Result<i64> {
+    vyp_index::timestamp::parse_cutoff(s).ok_or_else(|| {
+        miette::miette!(
+            "Invalid exclude-newer value '{}': use a date (2026-01-31), a timestamp (2026-01-31T12:00:00Z), or a duration (P7D, \"7 days\")",
+            s
+        )
+    })
 }
 
 /// `inherit-overrides`: `true`, `false`, or an allowlist of package names.
@@ -79,6 +116,7 @@ impl InheritOverrides {
         }
     }
 }
+
 
 impl Default for VypConfig {
     fn default() -> Self {
@@ -102,6 +140,14 @@ impl Default for VypConfig {
             errata: Vec::new(),
             inherit_overrides: InheritOverrides::default(),
             project_dir: None,
+            python: None,
+            target_python: None,
+            startup_files: Default::default(),
+            exclude_newer: Default::default(),
+            sdists: Default::default(),
+            sdist_builder: None,
+            pre_release_packages: Vec::new(),
+            local_sources: Vec::new(),
         }
     }
 }
@@ -198,6 +244,20 @@ struct RawVypConfig {
     errata: Vec<String>,
     #[serde(default, rename = "inherit-overrides")]
     inherit_overrides: Option<RawInheritOverrides>,
+    #[serde(default)]
+    python: Option<String>,
+    #[serde(default, rename = "startup-files")]
+    startup_files: Option<String>,
+    #[serde(default, rename = "allow-startup-files")]
+    allow_startup_files: Vec<String>,
+    #[serde(default, rename = "exclude-newer")]
+    exclude_newer: Option<String>,
+    #[serde(default, rename = "exclude-newer-package")]
+    exclude_newer_package: HashMap<String, toml::Value>,
+    #[serde(default)]
+    sdists: Option<String>,
+    #[serde(default, rename = "pre-release-packages")]
+    pre_release_packages: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -216,8 +276,24 @@ struct RawExtraIndex {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawSourceEntry {
-    index: String,
+    #[serde(default)]
+    index: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    editable: bool,
+    #[serde(default)]
+    git: Option<String>,
+    #[serde(default)]
+    rev: Option<String>,
+    #[serde(default)]
+    tag: Option<String>,
+    #[serde(default)]
+    branch: Option<String>,
+    #[serde(default)]
+    subdirectory: Option<String>,
     #[serde(default)]
     marker: Option<String>,
 }
@@ -262,16 +338,55 @@ struct RawPluginLoad {
 // ---------------------------------------------------------------------------
 
 impl VypConfig {
+    /// Make `path` sources absolute, and collect direct references
+    /// (`pkg @ file://...`, `pkg @ git+...`) from the dependency lists.
+    fn resolve_local_source_paths(&mut self, project_dir: &Path) {
+        use crate::build::sources::LocalSource;
+        for (_, source) in &mut self.local_sources {
+            if let LocalSource::Path { path, .. } = source {
+                if path.is_relative() {
+                    *path = project_dir.join(&*path);
+                }
+            }
+        }
+        let all_deps = self
+            .dependencies
+            .iter()
+            .chain(self.optional_dependencies.values().flatten())
+            .chain(self.dependency_groups.values().flatten());
+        let mut direct = Vec::new();
+        for dep in all_deps {
+            let Ok(req) = dep.parse::<Requirement>() else { continue };
+            let Some(url) = &req.url else { continue };
+            let name = req.package.name().to_string();
+            if self.local_sources.iter().any(|(n, _)| vyp_api::normalize_package_name(n) == name) {
+                continue;
+            }
+            if let Some(source) = LocalSource::from_direct_reference(url, project_dir) {
+                direct.push((name, source));
+            }
+        }
+        self.local_sources.extend(direct);
+    }
+
+    /// Set the global `exclude-newer` cutoff (config, `--exclude-newer` or
+    /// `VYP_EXCLUDE_NEWER`).
+    pub fn set_exclude_newer(&mut self, value: &str) -> miette::Result<()> {
+        self.exclude_newer.default = Some(parse_cutoff(value)?);
+        Ok(())
+    }
+
     pub fn from_file(path: &Path) -> miette::Result<Self> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| miette::miette!("Failed to read {}: {}", path.display(), e))?;
         let mut config = Self::from_str(&content)?;
-        config.project_dir = Some(
-            path.parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from(".")),
-        );
+        let project_dir = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        config.resolve_local_source_paths(&project_dir);
+        config.project_dir = Some(project_dir);
         Ok(config)
     }
 
@@ -342,16 +457,33 @@ impl VypConfig {
         }
 
         for (pkg, entries) in vyp.sources {
-            config.sources.insert(
-                pkg,
-                entries
-                    .into_iter()
-                    .map(|e| SourceEntry {
-                        index: e.index,
-                        marker: e.marker,
-                    })
-                    .collect(),
-            );
+            let mut index_entries = Vec::new();
+            for e in entries {
+                match (e.index, e.path, e.git) {
+                    (Some(index), None, None) => index_entries.push(SourceEntry { index, marker: e.marker }),
+                    (None, Some(path), None) => config.local_sources.push((
+                        pkg.clone(),
+                        crate::build::sources::LocalSource::Path { path: PathBuf::from(path), editable: e.editable },
+                    )),
+                    (None, None, Some(url)) => config.local_sources.push((
+                        pkg.clone(),
+                        crate::build::sources::LocalSource::Git(crate::build::git::GitRef {
+                            url,
+                            rev: e.rev.or(e.tag).or(e.branch),
+                            subdirectory: e.subdirectory,
+                        }),
+                    )),
+                    _ => {
+                        return Err(miette::miette!(
+                            "[tool.vyp.sources] entry for {} must set exactly one of index, path or git",
+                            pkg
+                        ))
+                    }
+                }
+            }
+            if !index_entries.is_empty() {
+                config.sources.insert(pkg, index_entries);
+            }
         }
 
         // Torch backend
@@ -376,6 +508,50 @@ impl VypConfig {
             }
             config.overrides.push(dep_override);
         }
+
+        config.python = vyp.python;
+        config.startup_files.mode = match vyp.startup_files.as_deref() {
+            None | Some("warn") => crate::cache::startup::StartupMode::Warn,
+            Some("deny") => crate::cache::startup::StartupMode::Deny,
+            Some("allow") => crate::cache::startup::StartupMode::Allow,
+            Some(other) => {
+                return Err(miette::miette!(
+                    "Invalid startup-files value '{}': expected \"warn\", \"deny\" or \"allow\"",
+                    other
+                ))
+            }
+        };
+        if let Some(s) = vyp.exclude_newer.as_deref() {
+            config.set_exclude_newer(s)?;
+        }
+        for (pkg, value) in vyp.exclude_newer_package {
+            let cutoff = match value {
+                toml::Value::Boolean(false) => None,
+                toml::Value::String(s) => Some(parse_cutoff(&s)?),
+                other => {
+                    return Err(miette::miette!(
+                        "exclude-newer-package.{} must be false or a date/duration, not {}",
+                        pkg,
+                        other
+                    ))
+                }
+            };
+            config.exclude_newer.packages.insert(vyp_api::normalize_package_name(&pkg), cutoff);
+        }
+        config.pre_release_packages = vyp.pre_release_packages;
+        config.sdists = match vyp.sdists.as_deref() {
+            None | Some("fallback") => vyp_index::SdistPolicy::Fallback,
+            Some("never") => vyp_index::SdistPolicy::Never,
+            Some("allow") => vyp_index::SdistPolicy::Allow,
+            Some(other) => {
+                return Err(miette::miette!(
+                    "Invalid sdists value '{}': expected \"never\", \"fallback\" or \"allow\"",
+                    other
+                ))
+            }
+        };
+        config.startup_files.allowed =
+            vyp.allow_startup_files.iter().map(|n| vyp_api::normalize_package_name(n)).collect();
 
         // Errata feeds and inherited overrides
         config.errata = vyp.errata;
@@ -547,15 +723,24 @@ impl VypConfig {
             .collect();
         router.seed_default(&default_seed);
 
+        let exclude_newer = Arc::new(self.exclude_newer.clone());
+        let configure = |p: vyp_index::PyPIMetadataProvider| {
+            let p = p.with_resolution_options(self.sdists, Arc::clone(&exclude_newer));
+            match &self.sdist_builder {
+                Some(hook) => p.with_sdist_builder(hook.0.clone()),
+                None => p,
+            }
+        };
+
         // Primary index (unscoped — serves everything not claimed by a scope).
-        providers.push(Box::new(
+        providers.push(Box::new(configure(
             vyp_index::PyPIMetadataProvider::with_name_env_client(
                 "pypi",
                 &self.index_url,
                 None,
                 marker_env.cloned(),
                 shared_client.clone(),
-            ),
+            )),
         ));
 
         // Extra indexes
@@ -574,27 +759,27 @@ impl VypConfig {
             } else {
                 None
             };
-            providers.push(Box::new(
+            providers.push(Box::new(configure(
                 vyp_index::PyPIMetadataProvider::with_name_env_client(
                     &idx.name,
                     &idx.url,
                     scope,
                     marker_env.cloned(),
                     shared_client.clone(),
-                ),
+                )),
             ));
         }
 
         // Torch backend: inject a scoped provider for the detected/configured backend.
         if let Some((url, _)) = torch_index {
-            providers.push(Box::new(
+            providers.push(Box::new(configure(
                 vyp_index::PyPIMetadataProvider::with_name_env_client(
                     "pytorch",
                     url,
                     Some(router.scope_for("pytorch")),
                     marker_env.cloned(),
                     shared_client.clone(),
-                ),
+                )),
             ));
         }
 

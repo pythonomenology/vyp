@@ -12,6 +12,7 @@ use rayon::prelude::*;
 
 use crate::cache::wheel_cache::WheelCache;
 use crate::cache::linker;
+use crate::cache::startup::{self, StartupPolicy};
 use crate::cache::venv::VenvLayout;
 use crate::config::settings::{InheritOverrides, VypConfig};
 use crate::lock::errata::{load_feeds, LoadedErrata};
@@ -51,6 +52,7 @@ pub enum ResolveOut {
         entries: Vec<UniversalPackageEntry>,
         environments: Vec<String>,
         errata_feeds: Vec<ErrataFeedDigest>,
+        exclude_newer: Option<i64>,
     },
 }
 
@@ -73,10 +75,30 @@ pub fn resolve_from_config(
     let shared_client = vyp_index::PyPIMetadataProvider::build_default_client();
     let errata = load_feeds(&config.errata, config.project_dir.as_deref(), &shared_client)?;
 
+    // Builds (path/git source metadata, sdists without static metadata) use
+    // the interpreter the resolution targets.
+    let frontend = target_python(config).and_then(|python| {
+        crate::build::Frontend::for_python(&python, &config.index_url, shared_client.clone()).ok()
+    });
+    let local_sources = if config.local_sources.is_empty() {
+        Vec::new()
+    } else {
+        let project_dir = config.project_dir.clone().unwrap_or_else(|| PathBuf::from("."));
+        crate::build::sources::resolve_all(&config.local_sources, &project_dir, || {
+            frontend.clone().ok_or_else(|| {
+                miette::miette!("Building local sources needs a Python interpreter; none was found")
+            })
+        })?
+    };
+    let sources = ResolveSources { local: &local_sources, frontend: frontend.as_ref() };
+
     if config.environments.is_empty() {
-        let marker_env = MarkerEnvironment::detect();
+        let marker_env = match target_python(config) {
+            Some(python) => MarkerEnvironment::detect_with(&python.to_string_lossy()),
+            None => MarkerEnvironment::detect(),
+        };
         let result = resolve_environment(
-            config, extra_reqs, torch_backend, &marker_env, &shared_client, &errata, progress,
+            config, extra_reqs, torch_backend, &marker_env, &shared_client, &errata, &sources, progress,
         )
         .map_err(|e| match e {
             ResolveError::NoSolution(msg) => miette::miette!("No solution found:\n{}", msg),
@@ -100,7 +122,7 @@ pub fn resolve_from_config(
 
         // Progress callback is not shared across multi-env resolutions (single use per resolve).
         let result = resolve_environment(
-            config, extra_reqs, torch_backend, &marker_env, &shared_client, &errata, None,
+            config, extra_reqs, torch_backend, &marker_env, &shared_client, &errata, &sources, None,
         )
         .map_err(|e| match e {
             ResolveError::NoSolution(msg) => miette::miette!("No solution for {}:\n{}", marker_str, msg),
@@ -114,9 +136,45 @@ pub fn resolve_from_config(
     let entries = merge_universal_results(env_results, config.fork_strategy);
     let environments = config.environments.clone();
     Ok((
-        ResolveOut::Universal { entries, environments, errata_feeds: errata.feeds },
+        ResolveOut::Universal { entries, environments, errata_feeds: errata.feeds, exclude_newer: config.exclude_newer.default },
         shared_client,
     ))
+}
+
+/// The interpreter a single-environment resolution targets: the one the
+/// command was given, the project's existing environment, or the
+/// interpreter a new project environment would be created with.
+pub fn target_python(config: &VypConfig) -> Option<PathBuf> {
+    if let Some(p) = &config.target_python {
+        return Some(p.clone());
+    }
+    let venv = crate::env::project_venv_path(None, config.project_dir.as_deref());
+    let layout_python = VenvLayout::from_root(&venv).ok().map(|l| l.python_exe);
+    if let Some(p) = layout_python.filter(|p| p.exists()) {
+        return Some(p);
+    }
+    let request = config
+        .python
+        .as_deref()
+        .map(crate::python::PythonRequest::parse)
+        .unwrap_or(crate::python::PythonRequest::Any);
+    crate::python::find(&request, config.requires_python.as_deref()).map(|i| i.executable)
+}
+
+/// The environment an install targets, created if it doesn't exist yet.
+pub fn target_venv(config: &VypConfig, venv: Option<&Path>) -> miette::Result<VenvLayout> {
+    crate::env::ensure_project_venv(
+        venv,
+        config.project_dir.as_deref(),
+        config.python.as_deref(),
+        config.requires_python.as_deref(),
+    )
+}
+
+/// Non-index sources for a resolution, prepared once for every environment.
+struct ResolveSources<'a> {
+    local: &'a [crate::build::sources::ResolvedSource],
+    frontend: Option<&'a crate::build::Frontend>,
 }
 
 enum ResolveError {
@@ -133,6 +191,7 @@ impl From<miette::Report> for ResolveError {
 /// Resolve for one target environment, applying errata and any overrides
 /// the selected releases ship. Inherited overrides can change which releases
 /// are selected, so re-resolve until the set of inherited overrides is stable.
+#[allow(clippy::too_many_arguments)]
 fn resolve_environment(
     config: &VypConfig,
     extra_reqs: &[Requirement],
@@ -140,6 +199,7 @@ fn resolve_environment(
     marker_env: &MarkerEnvironment,
     client: &reqwest::Client,
     errata: &LoadedErrata,
+    sources: &ResolveSources,
     mut progress: Option<Box<dyn Fn(ResolveProgress) + Send>>,
 ) -> Result<ResolutionResult, ResolveError> {
     let env_errata = errata.for_environment(marker_env)?;
@@ -160,6 +220,7 @@ fn resolve_environment(
             env_errata.clone(),
             progress.take(),
             prefetcher.as_ref(),
+            sources,
         )?;
 
         let found = match &prefetcher {
@@ -169,6 +230,12 @@ fn resolve_environment(
         let fingerprint = shipped_overrides::fingerprint(&found);
         if fingerprint == shipped_overrides::fingerprint(&inherited) {
             result.errata_feeds = errata.feeds.clone();
+            result.exclude_newer = config.exclude_newer.default;
+            for source in sources.local {
+                if result.packages.contains_key(&source.name) {
+                    result.source_refs.insert(source.name.clone(), source.reference.clone());
+                }
+            }
             return Ok(result);
         }
         if seen.contains(&fingerprint) {
@@ -197,13 +264,34 @@ fn resolve_once(
     errata: Vec<Erratum>,
     progress: Option<Box<dyn Fn(ResolveProgress) + Send>>,
     prefetcher: Option<&shipped_overrides::Prefetcher>,
+    sources: &ResolveSources,
 ) -> Result<ResolutionResult, ResolveError> {
+    let mut config = config.clone();
+    if config.sdists != vyp_index::SdistPolicy::Never {
+        if let Some(frontend) = sources.frontend.cloned() {
+            config.sdist_builder = Some(crate::config::settings::SdistBuilderHook(Arc::new(move |sdist: &Path| {
+                // Builds start their own runtimes, which can't nest in the
+                // index's async runtime this is called from.
+                let frontend = frontend.clone();
+                let sdist = sdist.to_path_buf();
+                std::thread::spawn(move || {
+                    crate::build::unpack_sdist(&sdist)
+                        .and_then(|tree| frontend.metadata(&tree))
+                        .map_err(|e| e.to_string())
+                })
+                .join()
+                .unwrap_or_else(|_| Err("sdist build panicked".to_string()))
+            })));
+        }
+    }
+    let config = &config;
     let mut builder = ResolverBuilder::new()
         .with_overrides(overrides)
         .with_errata(errata)
         .with_substitutions(config.substitutions.clone())
         .with_resolution_strategy(config.core_resolution_strategy())
-        .with_pre_release_policy(config.core_pre_release_policy());
+        .with_pre_release_policy(config.core_pre_release_policy())
+        .with_pre_release_packages(config.pre_release_packages.clone());
 
     if let Some(cb) = progress {
         builder = builder.with_progress(cb);
@@ -235,6 +323,9 @@ fn resolve_once(
     for provider in providers {
         builder = builder.with_provider(provider);
     }
+    if !sources.local.is_empty() {
+        builder = builder.with_provider(Box::new(crate::build::sources::DirectProvider::new(sources.local, marker_env)));
+    }
     builder = builder.with_index_router(router);
 
     builder.resolve().map_err(|e| match e {
@@ -258,6 +349,9 @@ fn report_applied_fixes(result: &ResolutionResult, environment: Option<&str>) {
                 shipped_overrides::describe_origin(o)
             );
         }
+    }
+    for warning in &result.backtracks {
+        eprintln!("warning{}: {}", suffix, warning.describe());
     }
     let touched = result
         .errata
@@ -324,26 +418,48 @@ fn packages_for_env<'a>(
         .collect()
 }
 
+/// How `install_lockfile` behaves.
+#[derive(Clone, Default)]
+pub struct InstallOptions {
+    pub dry_run: bool,
+    /// Index to look up wheel URLs on when the lock doesn't carry one.
+    pub default_index: Option<String>,
+    pub client: Option<reqwest::Client>,
+    pub startup: StartupPolicy,
+    /// Suppress progress output (build environments).
+    pub quiet: bool,
+    /// Directory that relative `directory` paths in the lock are relative to.
+    pub lock_dir: Option<PathBuf>,
+}
+
 pub fn install_lockfile(
     lockfile: &LockFile,
-    venv: Option<&Path>,
-    dry_run: bool,
-    default_index: Option<&str>,
-    shared_client: Option<reqwest::Client>,
+    layout: &VenvLayout,
+    options: &InstallOptions,
 ) -> miette::Result<Option<InstallTiming>> {
+    let dry_run = options.dry_run;
+    let default_index = options.default_index.as_deref();
+    let shared_client = options.client.clone();
+    let startup_policy = &options.startup;
+    let quiet = options.quiet;
     let profiling = std::env::var("VYP_PROFILE").is_ok_and(|v| v == "1");
+    crate::env::provenance::preflight(layout)?;
     let t_marker_start = Instant::now();
-    let marker_env = MarkerEnvironment::detect();
+    let marker_env = MarkerEnvironment::detect_with(&layout.python_exe.to_string_lossy());
     let marker_detect_ms = if profiling { t_marker_start.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
     let packages = packages_for_env(&lockfile.packages, &marker_env);
+    // Local trees, VCS checkouts and sdist-only releases are built first,
+    // then installed like any wheel.
+    let (to_build, packages): (Vec<&PyLockPackage>, Vec<&PyLockPackage>) =
+        packages.into_iter().partition(|p| needs_build(p));
 
-    if packages.is_empty() {
+    if packages.is_empty() && to_build.is_empty() {
         println!("No packages to install for this environment.");
         return Ok(None);
     }
 
     let t_site_start = Instant::now();
-    let layout = VenvLayout::discover(venv)?;
+    let layout = layout.clone();
     let site_packages = layout.site_packages.clone();
     let site_packages_ms = if profiling { t_site_start.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
     let fallback_index = default_index.unwrap_or(DEFAULT_INDEX);
@@ -354,14 +470,16 @@ pub fn install_lockfile(
             packages.len(),
             site_packages.display()
         );
-        for pkg in &packages {
-            println!("  {} == {}", pkg.name, pkg.version);
+        for pkg in packages.iter().chain(&to_build) {
+            println!("  {} == {}{}", pkg.name, pkg.version, if needs_build(pkg) { " (build)" } else { "" });
         }
         return Ok(None);
     }
 
-    let total = packages.len();
-    println!("Installing {} packages into {}...", total, site_packages.display());
+    let total = packages.len() + to_build.len();
+    if !quiet {
+        println!("Installing {} packages into {}...", total, site_packages.display());
+    }
 
     let start = Instant::now();
     let wheel_cache = WheelCache::new();
@@ -455,6 +573,7 @@ pub fn install_lockfile(
         let install_workers = install_workers;
 
         let layout_cached = layout.clone();
+        let policy_cached = startup_policy.clone();
         let cache_link_handle = tokio::task::spawn_blocking(move || {
             let t = Instant::now();
             let pool = rayon::ThreadPoolBuilder::new()
@@ -466,6 +585,12 @@ pub fn install_lockfile(
                     .par_iter()
                     .map(|(name, archive_path, file_list)| {
                         let t = Instant::now();
+                        let files = archive_files(archive_path, file_list.as_deref());
+                        match startup::check(name, archive_path, &files, &policy_cached) {
+                            Err(e) => return Err((name.clone(), e)),
+                            Ok(Some(warning)) => eprintln!("warning: {}", warning),
+                            Ok(None) => {}
+                        }
                         let list_ref = file_list.as_deref();
                         let res = linker::install_wheel(archive_path, &layout_cached, list_ref, assume_fresh, false)
                             .map_err(|e| (name.clone(), format!("install failed: {}", e)));
@@ -493,6 +618,7 @@ pub fn install_lockfile(
                     let ext_c = Arc::clone(&ext_ns);
                     let lnk_c = Arc::clone(&lnk_ns);
                     let assume_fresh_dl = assume_fresh_dl;
+                    let policy = startup_policy.clone();
                     async move {
                         let dl_start = Instant::now();
                         let dw = match download_wheel_job(&cl, &job.name, &job.version, &job.wheels, &fb, &tmp, &tags).await {
@@ -539,6 +665,13 @@ pub fn install_lockfile(
                                 }
                             }
 
+                            let files = archive_files(&archive_path, (!file_list.is_empty()).then_some(file_list.as_slice()));
+                            match startup::check(&pkg_name, &archive_path, &files, &policy) {
+                                Err(e) => return Err((pkg_name, e)),
+                                Ok(Some(warning)) => eprintln!("warning: {}", warning),
+                                Ok(None) => {}
+                            }
+
                             let link_start = Instant::now();
                             let file_list_ref = if file_list.is_empty() { None } else { Some(file_list.as_slice()) };
                             if let Err(e) = linker::install_wheel(&archive_path, &layout2, file_list_ref, assume_fresh_dl, false) {
@@ -567,6 +700,21 @@ pub fn install_lockfile(
     let mut installed = 0usize;
     let mut failed: Vec<(String, String)> = Vec::new();
 
+    if !to_build.is_empty() {
+        let lock_dir = options
+            .lock_dir
+            .clone()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let frontend = crate::build::Frontend::for_python(&layout.python_exe, fallback_index, client.clone())?;
+        for pkg in &to_build {
+            match build_and_install(pkg, &frontend, &layout, &lock_dir, &rt, &client, &wheel_cache, startup_policy, quiet) {
+                Ok(()) => installed += 1,
+                Err(e) => failed.push((pkg.name.clone(), e.to_string())),
+            }
+        }
+    }
+
     for r in link_cached_results {
         match r {
             Ok(()) => installed += 1,
@@ -588,11 +736,13 @@ pub fn install_lockfile(
 
     let elapsed = start.elapsed();
     let total_ms = elapsed.as_secs_f64() * 1000.0;
-    println!(
-        "\nInstalled {} package(s) in {:.2}s.",
-        installed,
-        elapsed.as_secs_f64()
-    );
+    if !quiet {
+        println!(
+            "\nInstalled {} package(s) in {:.2}s.",
+            installed,
+            elapsed.as_secs_f64()
+        );
+    }
     if !failed.is_empty() {
         println!("{} package(s) failed:", failed.len());
         for (name, err) in &failed {
@@ -630,6 +780,135 @@ pub fn install_lockfile(
     };
 
     Ok(timing)
+}
+
+fn needs_build(pkg: &PyLockPackage) -> bool {
+    pkg.directory.is_some() || pkg.vcs.is_some() || (pkg.wheels.is_empty() && pkg.sdist.is_some())
+}
+
+/// Build a package that has no wheel in the lock and install the result.
+#[allow(clippy::too_many_arguments)]
+fn build_and_install(
+    pkg: &PyLockPackage,
+    frontend: &crate::build::Frontend,
+    layout: &VenvLayout,
+    lock_dir: &Path,
+    rt: &tokio::runtime::Runtime,
+    client: &reqwest::Client,
+    wheel_cache: &WheelCache,
+    startup_policy: &StartupPolicy,
+    quiet: bool,
+) -> miette::Result<()> {
+    let out_dir = crate::build::scratch_dir("wheel")?;
+    let (wheel, own_code) = if let Some(dir) = &pkg.directory {
+        let tree = lock_dir.join(&dir.path);
+        let tree = match &dir.subdirectory {
+            Some(sub) => tree.join(sub),
+            None => tree,
+        };
+        if !quiet {
+            println!("Building {} from {}{}", pkg.name, tree.display(), if dir.editable { " (editable)" } else { "" });
+        }
+        (frontend.build(&tree, dir.editable, &out_dir)?, true)
+    } else if let Some(vcs) = &pkg.vcs {
+        if vcs.kind != "git" {
+            return Err(miette::miette!("{} is a {} checkout; only git is supported", pkg.name, vcs.kind));
+        }
+        let checkout = crate::build::git::checkout(&vcs.url, &vcs.commit_id)?;
+        let tree = match &vcs.subdirectory {
+            Some(sub) => checkout.join(sub),
+            None => checkout,
+        };
+        if !quiet {
+            println!("Building {} from {}@{}", pkg.name, vcs.url, &vcs.commit_id[..vcs.commit_id.len().min(12)]);
+        }
+        (cached_build(frontend, &format!("git-{}-{:?}", vcs.commit_id, vcs.subdirectory), &tree, &out_dir)?, false)
+    } else if let Some(sdist) = &pkg.sdist {
+        let url = sdist
+            .url
+            .clone()
+            .ok_or_else(|| miette::miette!("The lock has no URL for {}'s sdist", pkg.name))?;
+        let sha = sdist.hashes.as_ref().and_then(|h| h.get("sha256")).cloned();
+        let semaphore = tokio::sync::Semaphore::new(1);
+        let path = rt
+            .block_on(vyp_index::sdist::download(client, &url, &sdist.name, sha.as_deref(), &semaphore))
+            .map_err(|e| miette::miette!("Failed to download {}: {}", sdist.name, e))?;
+        if !quiet {
+            println!("Building {} from {}", pkg.name, sdist.name);
+        }
+        let key = format!("sdist-{}", sha.unwrap_or_else(|| crate::python::hex_sha256(url.as_bytes())));
+        let tree = crate::build::unpack_sdist(&path)?;
+        (cached_build(frontend, &key, &tree, &out_dir)?, false)
+    } else {
+        return Err(miette::miette!("Nothing to build for {}", pkg.name));
+    };
+
+    let wheel_bytes = std::fs::read(&wheel).map_err(|e| miette::miette!("Cannot read {}: {}", wheel.display(), e))?;
+    let key = format!(
+        "built-{}-{}-{}",
+        vyp_api::normalize_package_name(&pkg.name),
+        pkg.version,
+        &crate::python::hex_sha256(&wheel_bytes)[..16]
+    );
+    let (archive, list) = wheel_cache
+        .store_from_file_with_list(&key, &wheel, false)
+        .map_err(|e| miette::miette!("Failed to unpack {}: {}", wheel.display(), e))?;
+    let _ = std::fs::remove_dir_all(&out_dir);
+    let files = archive_files(&archive, (!list.is_empty()).then_some(list.as_slice()));
+
+    // The project's own source trees (including editable installs, which
+    // use a .pth file by design) aren't third-party code.
+    if !own_code {
+        match startup::check(&pkg.name, &archive, &files, startup_policy) {
+            Err(e) => return Err(miette::miette!("{}", e)),
+            Ok(Some(warning)) => eprintln!("warning: {}", warning),
+            Ok(None) => {}
+        }
+    }
+    // A rebuilt tree can drop files the previous build installed.
+    if let Some(existing) = crate::cache::installed::find_installed(layout, &pkg.name) {
+        crate::cache::installed::uninstall_dist(layout, &existing)
+            .map_err(|e| miette::miette!("Failed to remove the previous {}: {}", pkg.name, e))?;
+    }
+    linker::install_wheel(&archive, layout, Some(&files), false, false)
+        .map_err(|e| miette::miette!("Failed to install {}: {}", pkg.name, e))
+}
+
+/// Build a wheel once per (immutable) source and interpreter, reusing it after.
+fn cached_build(
+    frontend: &crate::build::Frontend,
+    key: &str,
+    tree: &Path,
+    out_dir: &Path,
+) -> miette::Result<PathBuf> {
+    let dir = crate::cache::wheel_cache::cache_base_dir()
+        .join("built-wheels")
+        .join(&crate::python::hex_sha256(format!("{}\n{}", key, frontend.interpreter_key()).as_bytes())[..24]);
+    if let Some(wheel) = std::fs::read_dir(&dir)
+        .ok()
+        .and_then(|d| d.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "whl")))
+    {
+        return Ok(wheel);
+    }
+    let built = frontend.build(tree, false, out_dir)?;
+    std::fs::create_dir_all(&dir).map_err(|e| miette::miette!("{}", e))?;
+    let dest = dir.join(built.file_name().unwrap_or_default());
+    std::fs::copy(&built, &dest).map_err(|e| miette::miette!("Failed to cache {}: {}", built.display(), e))?;
+    Ok(dest)
+}
+
+/// An extracted wheel's relative file list, walking the directory when the
+/// cache has no manifest for it.
+fn archive_files(archive: &Path, list: Option<&[PathBuf]>) -> Vec<PathBuf> {
+    match list {
+        Some(l) => l.to_vec(),
+        None => walkdir::WalkDir::new(archive)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .filter_map(|e| e.path().strip_prefix(archive).ok().map(Path::to_path_buf))
+            .collect(),
+    }
 }
 
 /// Stable cache key for a package: normalized name + version.

@@ -29,9 +29,20 @@ The metadata cache is content-addressed and uses LRU eviction (default max 2 GB)
 
 1. `--venv` flag — explicit path.
 2. `VIRTUAL_ENV` — active virtual environment.
-3. `.venv` in the current directory — local project venv.
+3. `.venv` next to `pyproject.toml` — created if it doesn't exist.
 
-If none are found, `vyp install` fails with an error asking you to specify `--venv`, activate a venv, or create `.venv`.
+---
+
+## Python and Builds
+
+| Variable | Description |
+|----------|-------------|
+| `VYP_PYTHON_INSTALL_DIR` | Where managed interpreters are installed (default `~/.local/share/vyp/python`). |
+| `VYP_PYTHON_DOWNLOADS_URL` | GitHub API base URL used to find python-build-standalone releases. |
+| `VYP_NO_PYTHON_DOWNLOADS` | `1` to never download an interpreter. |
+| `GITHUB_TOKEN` | Sent to the GitHub API when listing Python builds. |
+| `VYP_BUILD_VERBOSE` | `1` to show build-backend output. |
+| `VYP_EXCLUDE_NEWER` | Same as `--exclude-newer`. |
 
 ---
 

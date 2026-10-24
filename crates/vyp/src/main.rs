@@ -1,8 +1,11 @@
 pub mod accelerator;
+mod build;
 mod cache;
 mod cli;
 mod config;
+mod env;
 mod lock;
+mod python;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;

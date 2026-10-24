@@ -11,6 +11,9 @@ pub mod plugin_cmd;
 pub mod install;
 pub mod uninstall;
 pub mod sync;
+pub mod venv_cmd;
+pub mod python_cmd;
+pub mod run;
 
 use clap::Subcommand;
 
@@ -40,6 +43,12 @@ pub enum Commands {
     Plugin(plugin_cmd::PluginArgs),
     /// Manage the vyp cache
     Cache(cache_cmd::CacheArgs),
+    /// Create a virtual environment
+    Venv(venv_cmd::VenvArgs),
+    /// Find and install Python interpreters
+    Python(python_cmd::PythonArgs),
+    /// Run a PEP 723 script, or a command in the project environment
+    Run(run::RunArgs),
 }
 
 pub fn run(command: Commands) -> miette::Result<()> {
@@ -56,5 +65,8 @@ pub fn run(command: Commands) -> miette::Result<()> {
         Commands::Override(args) => override_cmd::run(args),
         Commands::Plugin(args) => plugin_cmd::run(args),
         Commands::Cache(args) => cache_cmd::run(args),
+        Commands::Venv(args) => venv_cmd::run(args),
+        Commands::Python(args) => python_cmd::run(args),
+        Commands::Run(args) => run::run(args),
     }
 }

@@ -54,6 +54,8 @@ pub struct ResolutionResult {
     pub inherited_conflicts: HashMap<String, ConflictSet>,
     /// Best wheel URL for each resolved package (keyed by normalized name).
     pub wheel_urls: HashMap<String, WheelUrlInfo>,
+    /// The sdist to build, for resolved packages with no compatible wheel.
+    pub sdist_urls: HashMap<String, WheelUrlInfo>,
     /// Timing breakdown (populated when `VYP_PROFILE=1`).
     pub timing: Option<ResolveTiming>,
     /// Overrides in effect for this resolution, including inherited ones.
@@ -63,6 +65,63 @@ pub struct ResolutionResult {
     /// Errata feeds consulted, with the digest of the content used. Filled in
     /// by the caller that loaded the feeds.
     pub errata_feeds: Vec<ErrataFeedDigest>,
+    /// Packages that come from a local directory or a VCS checkout instead
+    /// of an index. Filled in by the caller that supplied those sources.
+    pub source_refs: HashMap<String, SourceRef>,
+    /// Packages that fell back to an older release because their newer
+    /// releases added an upper bound the selected dependency violates.
+    pub backtracks: Vec<BacktrackWarning>,
+    /// The upload-time cutoff (Unix seconds) the indexes were filtered by.
+    /// Filled in by the caller that configured the providers.
+    pub exclude_newer: Option<i64>,
+}
+
+/// Where a package that isn't from an index comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceRef {
+    /// A local source tree; `path` is relative to the project when possible.
+    Directory { path: String, editable: bool },
+    Git {
+        url: String,
+        requested_revision: Option<String>,
+        commit: String,
+        subdirectory: Option<String>,
+    },
+}
+
+/// A package resolved to an older release because every newer one excludes
+/// the version of a dependency that was selected, while the chosen release
+/// declares no such limit. It installs, but likely has the same
+/// incompatibility the newer releases fixed by adding the bound.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BacktrackWarning {
+    pub package: String,
+    pub selected: VypVersion,
+    pub newest: VypVersion,
+    /// Viable releases between the selected and the newest.
+    pub skipped: usize,
+    pub dependency: String,
+    pub dependency_version: VypVersion,
+    /// The newest release's requirement on `dependency`, e.g. `<2`.
+    pub newest_requires: String,
+}
+
+impl BacktrackWarning {
+    pub fn describe(&self) -> String {
+        format!(
+            "{pkg} {sel} was selected instead of {pkg} {new} ({skipped} newer release{s} skipped): \
+             {pkg} {new} requires {dep}{req} but {dep} {dv} is selected. {pkg} {sel} doesn't declare \
+             that limit, so it may be just as incompatible with {dep} {dv}.",
+            pkg = self.package,
+            sel = self.selected,
+            new = self.newest,
+            skipped = self.skipped,
+            s = if self.skipped == 1 { "" } else { "s" },
+            dep = self.dependency,
+            req = self.newest_requires,
+            dv = self.dependency_version,
+        )
+    }
 }
 
 /// Timing breakdown of the resolve phase.
@@ -143,6 +202,7 @@ pub struct ResolverBuilder {
     plugin_loader: PluginLoader,
     resolution_strategy: ResolutionStrategy,
     pre_release_policy: PreReleasePolicy,
+    pre_release_packages: std::collections::HashSet<String>,
     warm_start: Option<WarmStartData>,
     progress: Option<Box<dyn Fn(ResolveProgress) + Send>>,
     on_select: Option<SelectionHook>,
@@ -160,6 +220,7 @@ impl ResolverBuilder {
             plugin_loader: PluginLoader::new(),
             resolution_strategy: ResolutionStrategy::default(),
             pre_release_policy: PreReleasePolicy::default(),
+            pre_release_packages: Default::default(),
             warm_start: None,
             progress: None,
             on_select: None,
@@ -213,6 +274,12 @@ impl ResolverBuilder {
     /// Set the pre-release policy.
     pub fn with_pre_release_policy(mut self, policy: PreReleasePolicy) -> Self {
         self.pre_release_policy = policy;
+        self
+    }
+
+    /// Allow pre-releases of these packages regardless of the policy.
+    pub fn with_pre_release_packages(mut self, packages: impl IntoIterator<Item = String>) -> Self {
+        self.pre_release_packages = packages.into_iter().map(|p| normalize_package_name(&p)).collect();
         self
     }
 
@@ -275,6 +342,7 @@ impl ResolverBuilder {
             .collect();
 
         let override_ranges = override_range_map(self.overrides.iter())?;
+        let check_backtracks = self.resolution_strategy == ResolutionStrategy::Highest;
         // Overrides inherited from dependencies rewrite edges between
         // dependencies, never the project's own direct requirements.
         let root_override_ranges =
@@ -306,8 +374,17 @@ impl ResolverBuilder {
         }
 
         if self.pre_release_policy != PreReleasePolicy::Allow {
+            // PEP 440: a specifier that names a pre-release (`torch>=2.6.0rc1`)
+            // asks for that package's pre-releases.
+            let mut allowed = self.pre_release_packages.clone();
+            for req in &self.root_dependencies {
+                if req.constraints.iter().any(|c| c.version.is_pre_release()) {
+                    allowed.insert(req.package.name().to_string());
+                }
+            }
             self.plugin_loader.filters.register(Box::new(
-                strategies::pre_release::PreReleaseFilter::with_policy(self.pre_release_policy),
+                strategies::pre_release::PreReleaseFilter::with_policy(self.pre_release_policy)
+                    .allowing(allowed),
             ));
         }
 
@@ -339,6 +416,13 @@ impl ResolverBuilder {
                 let pkg_id = solver.get_or_create_package(&req.package);
                 (pkg_id, range)
             })
+            .collect();
+
+        let root_ranges: HashMap<String, VS> = self
+            .root_dependencies
+            .iter()
+            .zip(&root_dep_ids)
+            .map(|(req, (_, range))| (req.package.name().to_string(), range.clone()))
             .collect();
 
         for (dep_id, dep_range) in &root_dep_ids {
@@ -412,6 +496,8 @@ impl ResolverBuilder {
                     &self.progress,
                     &self.on_select,
                     &self.index_router,
+                    check_backtracks,
+                    &root_ranges,
                 );
                 let _ = result_tx.send(result);
             })
@@ -442,6 +528,8 @@ impl ResolverBuilder {
         progress: &Option<Box<dyn Fn(ResolveProgress) + Send>>,
         on_select: &Option<SelectionHook>,
         index_router: &IndexRouter,
+        check_backtracks: bool,
+        root_ranges: &HashMap<String, VS>,
     ) -> Result<ResolutionResult, VypError> {
         let profiling = std::env::var("VYP_PROFILE").is_ok_and(|v| v == "1");
         let solve_start = Instant::now();
@@ -553,12 +641,24 @@ impl ResolverBuilder {
                 }
 
                 let provenance = resolver::provenance::annotate_provenance(&packages, provenance);
+                let backtracks = if check_backtracks {
+                    find_backtracks(&packages, root_ranges, version_cache, deps_cache, &plugin_loader.providers)
+                } else {
+                    Vec::new()
+                };
 
                 let wheel_url_start = Instant::now();
                 let mut wheel_urls = HashMap::new();
+                let mut sdist_urls = HashMap::new();
                 for (name, version) in &packages {
                     if let Some(dist) = plugin_loader.providers.wheel_dist(name, version) {
                         wheel_urls.insert(name.clone(), WheelUrlInfo {
+                            filename: dist.filename,
+                            url: dist.url,
+                            hashes: dist.hashes.into_iter().collect(),
+                        });
+                    } else if let Some(dist) = plugin_loader.providers.sdist_dist(name, version) {
+                        sdist_urls.insert(name.clone(), WheelUrlInfo {
                             filename: dist.filename,
                             url: dist.url,
                             hashes: dist.hashes.into_iter().collect(),
@@ -594,10 +694,14 @@ impl ResolverBuilder {
                     provenance,
                     inherited_conflicts: std::mem::take(inherited_conflicts),
                     wheel_urls,
+                    sdist_urls,
                     timing,
+                    backtracks,
+                    source_refs: HashMap::new(),
                     overrides: Vec::new(),
                     errata: Vec::new(),
                     errata_feeds: Vec::new(),
+                    exclude_newer: None,
                 });
             };
             *next_pkg = pkg_id;
@@ -696,6 +800,92 @@ impl Default for ResolverBuilder {
 // ---------------------------------------------------------------------------
 // Helper functions for fetching versions and dependencies
 // ---------------------------------------------------------------------------
+
+/// Find packages that fell back to a release older than their newest viable
+/// one only because the newer releases cap a dependency below the version
+/// selected (see [`BacktrackWarning`]).
+fn find_backtracks(
+    packages: &HashMap<String, VypVersion>,
+    root_ranges: &HashMap<String, VS>,
+    version_cache: &HashMap<String, Arc<Vec<VypVersion>>>,
+    deps_cache: &DepsCache,
+    providers: &ProviderRegistry,
+) -> Vec<BacktrackWarning> {
+    let mut warnings = Vec::new();
+    let mut names: Vec<&String> = packages.keys().collect();
+    names.sort();
+    for name in names {
+        let selected = &packages[name];
+        let Some(versions) = version_cache.get(name) else { continue };
+        let Some(newest) = versions.iter().max() else { continue };
+        if newest <= selected {
+            continue;
+        }
+        // If the user or another package rules the newest release out, the
+        // fallback is deliberate, not a symptom.
+        let mut incoming = root_ranges.get(name).cloned().unwrap_or_else(Ranges::full);
+        for (dependent, version) in packages {
+            if let Some(deps) = deps_cache.get(&(dependent.clone(), version.clone())) {
+                for (pkg, range) in deps.iter() {
+                    if pkg.name() == name {
+                        incoming = incoming.intersection(range);
+                    }
+                }
+            }
+        }
+        if !incoming.contains(newest) {
+            continue;
+        }
+
+        let package = VypPackage::named(name);
+        let Some(metadata) = providers
+            .providers()
+            .iter()
+            .filter(|p| p.can_provide(&package))
+            .find_map(|p| p.get_metadata(&package, newest).ok().flatten())
+        else {
+            continue;
+        };
+        let selected_deps = deps_cache.get(&(name.clone(), selected.clone()));
+        for req in &metadata.dependencies {
+            let dep = req.package.name();
+            let Some(dep_version) = packages.get(dep) else { continue };
+            let newest_range = requirements_to_range(&req.constraints);
+            // Only an upper bound below the selected version is suspicious;
+            // a raised lower bound means the old release is the right one.
+            let capped = !newest_range.contains(dep_version)
+                && newest_range.intersection(&Ranges::higher_than(dep_version.clone())).is_empty();
+            if !capped {
+                continue;
+            }
+            let old_range = selected_deps
+                .and_then(|deps| deps.iter().find(|(p, _)| p.name() == dep).map(|(_, r)| r.clone()));
+            // The release we fell back to bounding the dependency itself means
+            // its maintainers made a call; only an unbounded one is suspect.
+            let far_future = VypVersion::new(vec![u32::MAX]);
+            if old_range.is_some_and(|r| !r.contains(&far_future)) {
+                continue;
+            }
+            let skipped = versions.iter().filter(|v| *v > selected && *v < newest).count();
+            warnings.push(BacktrackWarning {
+                package: name.clone(),
+                selected: selected.clone(),
+                newest: newest.clone(),
+                skipped,
+                dependency: dep.to_string(),
+                dependency_version: dep_version.clone(),
+                newest_requires: req
+                    .constraints
+                    .iter()
+                    .map(|c| format!("{}{}", c.op, c.version))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            });
+            break;
+        }
+    }
+    warnings
+}
 
 /// Parse overrides into the ranges that replace every requirement on each
 /// overridden package. Several overrides on one package intersect.
@@ -1811,3 +2001,107 @@ mod inherited_override_tests {
     }
 }
 
+#[cfg(test)]
+mod pre_release_tests {
+    use super::*;
+    use vyp_api::Requirement;
+    use vyp_index::OfflineMetadataProvider;
+
+    fn provider() -> OfflineMetadataProvider {
+        let mut p = OfflineMetadataProvider::new();
+        p.add_package("torch", "2.5.0".parse().unwrap(), vec![Requirement::new("sympy")]);
+        p.add_package("torch", "2.6.0rc1".parse().unwrap(), vec![Requirement::new("sympy")]);
+        p.add_package("sympy", "1.12.0".parse().unwrap(), vec![]);
+        p.add_package("sympy", "1.13.0a1".parse().unwrap(), vec![]);
+        p
+    }
+
+    #[test]
+    fn named_packages_get_pre_releases_and_dependencies_do_not() {
+        let result = ResolverBuilder::new()
+            .with_provider(Box::new(provider()))
+            .with_pre_release_packages(["Torch".to_string()])
+            .add_dependency(Requirement::new("torch"))
+            .resolve()
+            .unwrap();
+        assert_eq!(result.packages["torch"].to_string(), "2.6.0rc1");
+        assert_eq!(result.packages["sympy"].to_string(), "1.12.0");
+    }
+
+    #[test]
+    fn pre_release_specifier_opts_that_package_in() {
+        let req: Requirement = "torch>=2.6.0rc1".parse().unwrap();
+        let result = ResolverBuilder::new()
+            .with_provider(Box::new(provider()))
+            .add_dependency(req)
+            .resolve()
+            .unwrap();
+        assert_eq!(result.packages["torch"].to_string(), "2.6.0rc1");
+        assert_eq!(result.packages["sympy"].to_string(), "1.12.0");
+    }
+}
+
+#[cfg(test)]
+mod backtrack_tests {
+    use super::*;
+    use vyp_api::{ComparisonOp, Requirement};
+    use vyp_index::OfflineMetadataProvider;
+
+    fn v(s: &str) -> VypVersion {
+        s.parse().unwrap()
+    }
+
+    fn resolve(p: OfflineMetadataProvider, deps: Vec<Requirement>) -> ResolutionResult {
+        ResolverBuilder::new().with_provider(Box::new(p)).add_dependencies(deps).resolve().unwrap()
+    }
+
+    #[test]
+    fn warns_when_newer_releases_cap_a_dependency_the_old_one_ignores() {
+        let mut p = OfflineMetadataProvider::new();
+        p.add_package("libx", v("1.0"), vec![]);
+        p.add_package("libx", v("2.0"), vec![]);
+        // green 3.x never bounded libx; 4.x learned it breaks on libx 2.
+        p.add_package("green", v("3.9"), vec![Requirement::new("libx")]);
+        p.add_package("green", v("4.0"), vec![Requirement::new("libx").with_constraint(ComparisonOp::Lt, v("2"))]);
+        p.add_package("green", v("4.1"), vec![Requirement::new("libx").with_constraint(ComparisonOp::Lt, v("2"))]);
+
+        let result = resolve(p, vec![
+            Requirement::new("green"),
+            Requirement::new("libx").with_constraint(ComparisonOp::Gte, v("2")),
+        ]);
+        assert_eq!(result.packages["green"], v("3.9"));
+        assert_eq!(result.backtracks.len(), 1, "{:?}", result.backtracks);
+        let w = &result.backtracks[0];
+        assert_eq!((w.package.as_str(), w.dependency.as_str(), w.skipped), ("green", "libx", 1));
+        assert_eq!(w.newest, v("4.1"));
+        assert!(w.describe().contains("libx<2"), "{}", w.describe());
+    }
+
+    #[test]
+    fn no_warning_when_the_user_rules_out_newer_releases() {
+        let mut p = OfflineMetadataProvider::new();
+        p.add_package("libx", v("2.0"), vec![]);
+        p.add_package("green", v("3.9"), vec![Requirement::new("libx")]);
+        p.add_package("green", v("4.1"), vec![Requirement::new("libx").with_constraint(ComparisonOp::Lt, v("2"))]);
+        let result = resolve(p, vec![
+            Requirement::new("green").with_constraint(ComparisonOp::Lt, v("4")),
+            Requirement::new("libx"),
+        ]);
+        assert!(result.backtracks.is_empty(), "{:?}", result.backtracks);
+    }
+
+    #[test]
+    fn no_warning_when_newer_releases_raise_a_lower_bound() {
+        let mut p = OfflineMetadataProvider::new();
+        p.add_package("libx", v("1.0"), vec![]);
+        p.add_package("libx", v("2.0"), vec![]);
+        p.add_package("green", v("3.9"), vec![Requirement::new("libx")]);
+        p.add_package("green", v("4.1"), vec![Requirement::new("libx").with_constraint(ComparisonOp::Gte, v("2"))]);
+        let result = resolve(p, vec![
+            Requirement::new("green"),
+            Requirement::new("libx").with_constraint(ComparisonOp::Lt, v("2")),
+        ]);
+        assert_eq!(result.packages["green"], v("3.9"));
+        assert!(result.backtracks.is_empty(), "{:?}", result.backtracks);
+    }
+}

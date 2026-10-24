@@ -25,14 +25,30 @@ pub struct LockArgs {
     /// PyTorch accelerator backend (auto, cpu, cu126, cu128, cu130, rocm6, xpu)
     #[arg(long)]
     pub torch_backend: Option<String>,
+
+    /// Ignore distributions uploaded after this date, timestamp or duration
+    /// ago (e.g. 2026-01-31, P7D, "7 days"). Overrides `exclude-newer`.
+    #[arg(long, env = "VYP_EXCLUDE_NEWER")]
+    pub exclude_newer: Option<String>,
+
+    /// Lock a PEP 723 script: resolve its inline metadata and write the
+    /// result into it as a `# /// pylock` block.
+    #[arg(long, conflicts_with_all = ["output", "name"])]
+    pub script: Option<PathBuf>,
 }
 
 pub fn run(args: LockArgs) -> miette::Result<()> {
-    let config = if args.project.exists() {
+    if let Some(script) = &args.script {
+        return lock_script(script, args.exclude_newer.as_deref());
+    }
+    let mut config = if args.project.exists() {
         VypConfig::from_file(&args.project)?
     } else {
         VypConfig::default()
     };
+    if let Some(cutoff) = &args.exclude_newer {
+        config.set_exclude_newer(cutoff)?;
+    }
 
     let is_tty = std::io::stderr().is_terminal();
     let start = std::time::Instant::now();
@@ -85,7 +101,7 @@ pub fn run(args: LockArgs) -> miette::Result<()> {
             }
             LockFile::from_resolution(result)
         }
-        ResolveOut::Universal { entries, environments, errata_feeds } => {
+        ResolveOut::Universal { entries, environments, errata_feeds, exclude_newer } => {
             if !is_tty {
                 let elapsed = start.elapsed();
                 eprintln!(
@@ -100,6 +116,7 @@ pub fn run(args: LockArgs) -> miette::Result<()> {
                 environments,
                 config.requires_python.as_deref(),
                 errata_feeds,
+                *exclude_newer,
             )
         }
     };
@@ -112,5 +129,31 @@ pub fn run(args: LockArgs) -> miette::Result<()> {
 
     lockfile.write_to_file(&output)?;
     println!("Lock file written to {}", output.display());
+    Ok(())
+}
+
+fn lock_script(script: &std::path::Path, exclude_newer: Option<&str>) -> miette::Result<()> {
+    let meta = super::run::read_metadata(script)?;
+    let block = meta
+        .script
+        .ok_or_else(|| miette::miette!("{} has no `# /// script` metadata block", script.display()))?;
+    let mut config = super::run::script_config(script, &block, &[])?;
+    if let Some(cutoff) = exclude_newer {
+        config.set_exclude_newer(cutoff)?;
+    }
+    let request = config
+        .python
+        .as_deref()
+        .map(crate::python::PythonRequest::parse)
+        .unwrap_or(crate::python::PythonRequest::Any);
+    let interp = crate::python::find_or_install(&request, config.requires_python.as_deref(), true)?;
+    config.target_python = Some(interp.executable);
+    let (out, _) = resolve_from_config(&config, &[], None, None)?;
+    let lockfile = match out {
+        ResolveOut::Single(result) => LockFile::from_resolution(&result),
+        ResolveOut::Universal { .. } => return Err(miette::miette!("Scripts can't use [tool.vyp] environments")),
+    };
+    super::run::write_script_lock(script, &lockfile)?;
+    println!("Locked {} packages into {}", lockfile.packages.len(), script.display());
     Ok(())
 }

@@ -93,6 +93,10 @@ impl ProviderRegistry {
 
     /// Return the best wheel distribution (with integrity hashes) for a
     /// resolved package+version.
+    pub fn sdist_dist(&self, package: &str, version: &vyp_api::VypVersion) -> Option<vyp_api::WheelDist> {
+        self.providers.iter().find_map(|p| p.sdist_dist(package, version))
+    }
+
     pub fn wheel_dist(
         &self,
         package: &str,

@@ -40,6 +40,9 @@ pub struct VypLockTool {
     /// Errata feeds consulted, with the digest of the content used.
     #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "errata-feeds")]
     pub errata_feeds: Vec<LockedErrataFeed>,
+    /// The upload-time cutoff the lock was resolved with.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "exclude-newer")]
+    pub exclude_newer: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,8 +52,8 @@ pub struct LockedErrataFeed {
 }
 
 impl PyLockTool {
-    fn from_feeds(feeds: &[ErrataFeedDigest]) -> Option<Self> {
-        if feeds.is_empty() {
+    fn new(feeds: &[ErrataFeedDigest], exclude_newer: Option<i64>) -> Option<Self> {
+        if feeds.is_empty() && exclude_newer.is_none() {
             return None;
         }
         Some(Self {
@@ -59,6 +62,7 @@ impl PyLockTool {
                     .iter()
                     .map(|f| LockedErrataFeed { source: f.source.clone(), sha256: f.sha256.clone() })
                     .collect(),
+                exclude_newer: exclude_newer.map(vyp_index::timestamp::format_rfc3339),
             }),
         })
     }
@@ -77,6 +81,12 @@ pub struct PyLockPackage {
     pub wheels: Vec<PyLockWheel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sdist: Option<PyLockSdist>,
+    /// A local source tree (PEP 751 `[packages.directory]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<PyLockDirectory>,
+    /// A version-control checkout (PEP 751 `[packages.vcs]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vcs: Option<PyLockVcs>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marker: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -112,6 +122,29 @@ pub struct PyLockSdist {
     pub hashes: Option<BTreeMap<String, String>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PyLockDirectory {
+    /// Relative to the lock file's directory when possible.
+    pub path: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub editable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subdirectory: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PyLockVcs {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "requested-revision")]
+    pub requested_revision: Option<String>,
+    #[serde(rename = "commit-id")]
+    pub commit_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subdirectory: Option<String>,
+}
+
 /// Vyp-specific provenance stored in `[packages.tool.vyp]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyLockPackageTool {
@@ -135,6 +168,20 @@ pub struct VypProvenance {
     /// selected release's requirements.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errata: Vec<LockedErratum>,
+    /// Set when this release was chosen only because newer ones cap a
+    /// dependency this release leaves unbounded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backtracked: Option<LockedBacktrack>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockedBacktrack {
+    pub newest: String,
+    pub skipped: usize,
+    pub dependency: String,
+    #[serde(rename = "newest-requires")]
+    pub newest_requires: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,6 +206,30 @@ pub struct LockedErratum {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub source: String,
+}
+
+pub fn directory_ref(result: &ResolutionResult, name: &str) -> Option<PyLockDirectory> {
+    match result.source_refs.get(name)? {
+        vyp_core::SourceRef::Directory { path, editable } => Some(PyLockDirectory {
+            path: path.clone(),
+            editable: *editable,
+            subdirectory: None,
+        }),
+        _ => None,
+    }
+}
+
+pub fn vcs_ref(result: &ResolutionResult, name: &str) -> Option<PyLockVcs> {
+    match result.source_refs.get(name)? {
+        vyp_core::SourceRef::Git { url, requested_revision, commit, subdirectory } => Some(PyLockVcs {
+            kind: "git".to_string(),
+            url: url.clone(),
+            requested_revision: requested_revision.clone(),
+            commit_id: commit.clone(),
+            subdirectory: subdirectory.clone(),
+        }),
+        _ => None,
+    }
 }
 
 /// The `[packages.tool.vyp]` table for one resolved package.
@@ -205,7 +276,15 @@ pub fn package_tool(result: &ResolutionResult, name: &str) -> Option<PyLockPacka
         })
         .collect();
 
-    if record.is_none() && overrides.is_empty() && errata.is_empty() {
+    let backtracked = result.backtracks.iter().find(|b| b.package == name).map(|b| LockedBacktrack {
+        newest: b.newest.to_string(),
+        skipped: b.skipped,
+        dependency: b.dependency.clone(),
+        newest_requires: b.newest_requires.clone(),
+        message: b.describe(),
+    });
+
+    if record.is_none() && overrides.is_empty() && errata.is_empty() && backtracked.is_none() {
         return None;
     }
     let record = record.cloned().unwrap_or_default();
@@ -217,6 +296,7 @@ pub fn package_tool(result: &ResolutionResult, name: &str) -> Option<PyLockPacka
             resolution_path: record.resolution_path,
             overrides,
             errata,
+            backtracked,
         }),
     })
 }
@@ -270,7 +350,14 @@ impl PyLockFile {
                     requires_python: None,
                     dependencies: Vec::new(),
                     wheels,
-                    sdist: None,
+                    sdist: result.sdist_urls.get(name.as_str()).map(|info| PyLockSdist {
+                        name: info.filename.clone(),
+                        url: Some(info.url.clone()),
+                        size: None,
+                        hashes: (!info.hashes.is_empty()).then(|| info.hashes.clone()),
+                    }),
+                    directory: directory_ref(result, name),
+                    vcs: vcs_ref(result, name),
                     marker: None,
                     index: None,
                     variant: None,
@@ -288,7 +375,7 @@ impl PyLockFile {
             dependency_groups: Vec::new(),
             default_groups: Vec::new(),
             packages,
-            tool: PyLockTool::from_feeds(&result.errata_feeds),
+            tool: PyLockTool::new(&result.errata_feeds, result.exclude_newer),
         }
     }
 
@@ -298,6 +385,7 @@ impl PyLockFile {
         environments: &[String],
         requires_python: Option<&str>,
         errata_feeds: &[ErrataFeedDigest],
+        exclude_newer: Option<i64>,
     ) -> Self {
         let packages: Vec<PyLockPackage> = entries
             .iter()
@@ -307,7 +395,9 @@ impl PyLockFile {
                 requires_python: None,
                 dependencies: Vec::new(),
                 wheels: e.wheels.clone(),
-                sdist: None,
+                sdist: e.sdist.clone(),
+                directory: e.directory.clone(),
+                vcs: e.vcs.clone(),
                 marker: e.marker.clone(),
                 index: None,
                 variant: None,
@@ -324,7 +414,7 @@ impl PyLockFile {
             dependency_groups: Vec::new(),
             default_groups: Vec::new(),
             packages,
-            tool: PyLockTool::from_feeds(errata_feeds),
+            tool: PyLockTool::new(errata_feeds, exclude_newer),
         }
     }
 
@@ -385,6 +475,9 @@ impl PyLockFile {
                         o.origin,
                         o.reason.as_deref().map(|r| format!(" -- {}", r)).unwrap_or_default()
                     ));
+                }
+                if let Some(b) = &prov.backtracked {
+                    explanation.push_str(&format!("  Warning: {}\n", b.message));
                 }
                 for e in &prov.errata {
                     let versions = if e.versions.is_empty() { "all releases" } else { e.versions.as_str() };

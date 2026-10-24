@@ -21,6 +21,7 @@ A lock file pins exact package versions and records provenance. It is determinis
 | `default-groups` | array of strings | Default groups to include. |
 | `packages` | array of package objects | Resolved packages. |
 | `tool.vyp.errata-feeds` | array of tables (optional) | Errata feeds consulted: `source` and the `sha256` of the content used. |
+| `tool.vyp.exclude-newer` | string (optional) | The upload-time cutoff the lock was resolved with. |
 
 ---
 
@@ -35,7 +36,9 @@ Each entry in `packages`:
 | `requires-python` | string (optional) | Python version requirement for this package. |
 | `dependencies` | array of strings | Dependency specifiers. |
 | `wheels` | array of wheel objects | Available wheel artifacts. |
-| `sdist` | object (optional) | Source distribution artifact. |
+| `sdist` | object (optional) | Source distribution; vyp builds it at install time when `wheels` is empty. |
+| `directory` | object (optional) | A local source tree: `path` (relative to the lock), `editable`. |
+| `vcs` | object (optional) | A checkout: `type` (`git`), `url`, `requested-revision`, `commit-id`, `subdirectory`. |
 | `marker` | string (optional) | PEP 508 environment marker. |
 | `index` | string (optional) | Index URL this package was fetched from. |
 | `variant` | object (optional) | PEP 825 variant descriptor (e.g. platform tag). |
@@ -81,6 +84,7 @@ vyp stores provenance in `packages[].tool.vyp`. PEP 751 allows `[tool]` at the p
 | `resolution_path` | string (optional) | Causal chain of resolution. |
 | `overrides` | array of tables (optional) | Overrides that replaced every requirement on this package: `constraint`, `origin` (`pyproject.toml` or the release that shipped it, e.g. `lib-a==1.0`), `reason`. |
 | `errata` | array of tables (optional) | Errata that affected this package: `versions`, `effect` (`exclude` or `requires`), `requires`, `reason`, `source`. |
+| `backtracked` | table (optional) | This release was chosen only because newer ones cap a dependency it leaves unbounded: `newest`, `skipped`, `dependency`, `newest-requires`, `message`. |
 
 ### selected_by Values
 

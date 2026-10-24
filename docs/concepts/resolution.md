@@ -65,6 +65,28 @@ pre-releases = "disallow"   # or "allow", "if-necessary"
 !!! warning "Pre-releases"
     Pre-releases can be unstable and change without notice. Use `allow` only when you intentionally need bleeding-edge versions.
 
+### Pre-releases for specific packages
+
+Allowing pre-releases globally lets every dependency's pre-releases in too: `torch`'s nightly pulls in an `mpmath` alpha that breaks `sympy`. Name the packages instead:
+
+```toml
+[tool.vyp]
+pre-release-packages = ["torch"]
+```
+
+Their dependencies still resolve to stable releases. A requirement whose specifier names a pre-release, such as `torch>=2.6.0rc1`, opts that package in automatically, as PEP 440 intends.
+
+## Backtracking Into Old Releases
+
+A common way for a resolution to succeed but install something broken: a library's newer releases add an upper bound on a dependency (`libx<2`), your environment needs `libx>=2`, so the resolver falls back to an older release of the library that simply never declared the bound. vyp detects this pattern after resolving and warns:
+
+```
+warning: green 3.9 was selected instead of green 4.1 (1 newer release skipped): green 4.1 requires libx<2
+but libx 2.0 is selected. green 3.9 doesn't declare that limit, so it may be just as incompatible with libx 2.0.
+```
+
+It only warns when nothing else ruled the newer releases out (your own constraints or another package's), when the newer release caps the dependency below the selected version (a raised lower bound is fine), and when the older release leaves it unbounded. The warning is recorded in the lock (`[packages.tool.vyp.backtracked]`) and shown by `vyp explain`. It runs with the default `highest` strategy.
+
 ## Metadata Providers
 
 Providers supply package metadata (versions, dependencies). Multiple providers can be registered; they are consulted in **priority order** (higher priority first).

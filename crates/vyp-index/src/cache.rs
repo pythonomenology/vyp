@@ -61,8 +61,14 @@ struct CacheEntry {
     last_access: u64,
 }
 
+/// Bumped when the stored file list changes meaning; older lists are refetched.
+/// 2: sdists and upload times are recorded.
+const VERSION_LIST_FORMAT: u32 = 2;
+
 #[derive(Serialize, Deserialize)]
 struct StoredVersionList {
+    #[serde(default)]
+    format: u32,
     versions: Vec<VypVersion>,
     timestamp: u64,
     #[serde(default)]
@@ -188,6 +194,9 @@ impl MetadataCache {
         package: &str,
     ) -> Option<CachedVersionList> {
         let stored: StoredVersionList = read_bin(&self.versions_path(package))?;
+        if stored.format < VERSION_LIST_FORMAT {
+            return None;
+        }
         let now = Self::now();
         if now.saturating_sub(stored.timestamp) > VERSION_LIST_TTL_SECS {
             return None;
@@ -204,6 +213,9 @@ impl MetadataCache {
         package: &str,
     ) -> Option<CachedVersionListWithValidators> {
         let stored: StoredVersionList = read_bin(&self.versions_path(package))?;
+        if stored.format < VERSION_LIST_FORMAT {
+            return None;
+        }
         Some((stored.versions, stored.etag, stored.last_modified, stored.wheel_info))
     }
 
@@ -225,6 +237,7 @@ impl MetadataCache {
         wheel_info: HashMap<String, Vec<crate::in_memory_index::WheelInfo>>,
     ) {
         let stored = StoredVersionList {
+            format: VERSION_LIST_FORMAT,
             versions: versions.to_vec(),
             timestamp: Self::now(),
             etag,

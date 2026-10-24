@@ -17,6 +17,11 @@ vyp solves dependency resolution for Python projects with features not found in 
 - **Package Substitution** — Declare interchangeable packages (e.g., `opencv-python` and `opencv-python-headless`)
 - **Dependency Provenance** — Full causal chain explaining why each version was selected
 - **Unified Dependency Overrides** — Range constraints and exact pins in a single `[[tool.vyp.overrides]]` array; libraries ship transitive overrides in their wheels and consumers inherit them
+- **Python & Environments** — Finds installed interpreters and installs checksum-verified managed CPython builds; creates (optionally relocatable) virtual environments and records what each was built from, refusing to install into one whose interpreter or host changed (`vyp venv --check`)
+- **Path, Editable, Git & Sdist Dependencies** — A PEP 517/660 build frontend with cached, isolated build environments; git refs locked to commits
+- **PEP 723 Scripts** — `vyp run script.py` in a cached environment; `vyp lock --script` embeds a PEP 751 lock in the script itself
+- **Supply-Chain Guards** — `exclude-newer` upload cutoffs (per package, recorded in the lock), and a gate on packages that install code run at every interpreter start (`.pth`, `sitecustomize`)
+- **Backtracking Warnings** — Flags releases chosen only because newer ones cap a dependency the old one leaves unbounded
 - **Errata Feeds** — Correct the `Requires-Dist`/`Requires-Python` of releases that are already published, or exclude broken ones, without waiting for a new upload
 - **PEP 751 Lock Files** — Standards-compliant `pylock.toml` output, with pinned wheel integrity hashes
 - **Platform-aware Resolution** — Versions with no installable wheel for the target environment are filtered out (libc-aware manylinux/musllinux tags, current-macOS deployment targets, free-threaded ABIs), so the resolver backtracks to an installable version instead of locking an unusable one
@@ -150,6 +155,18 @@ vyp uninstall rich pygments      # remove packages (RECORD-based, removes script
 vyp sync                         # make the venv exactly match the lock (install + prune extras)
 vyp sync --lockfile pylock.toml  # sync from an explicit lock
 vyp sync --dry-run               # preview adds/removals
+```
+
+### Python, environments and scripts
+
+```bash
+vyp python install 3.12          # managed CPython (checksum-verified)
+vyp venv --python 3.12           # create .venv (sync/install create it automatically)
+vyp venv --relocatable           # movable environment
+vyp venv --check                 # stale interpreter, other host, or changed packages?
+vyp run script.py                # PEP 723 script in a cached environment
+vyp lock --script script.py      # embed a PEP 751 lock in the script
+vyp run pytest -q                # command inside the project environment
 ```
 
 ### Explain a package selection

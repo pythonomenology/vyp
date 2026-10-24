@@ -52,6 +52,9 @@ pub struct WheelInfo {
     /// Integrity hashes published by the index (algo -> hex digest).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub hashes: std::collections::BTreeMap<String, String>,
+    /// PEP 700 upload time, as Unix seconds.
+    #[serde(default)]
+    pub upload_time: Option<i64>,
 }
 
 /// Metadata result stored in the index.

@@ -69,6 +69,10 @@ nav:
       - Lock Files: guides/lockfiles.md
       - Overrides & Conflicts: guides/overrides.md
       - Errata: guides/errata.md
+      - Python Interpreters: guides/python.md
+      - Virtual Environments: guides/environments.md
+      - Single-File Scripts: guides/scripts.md
+      - Supply-Chain Safety: guides/supply-chain.md
       - PyTorch: guides/pytorch.md
       - Package Indexes: guides/indexes.md
       - Plugins: guides/plugins.md

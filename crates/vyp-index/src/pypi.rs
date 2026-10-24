@@ -70,6 +70,11 @@ pub struct PyPIMetadataProvider {
     rp_cache: Mutex<HashMap<String, bool>>,
     semaphore: Arc<Semaphore>,
     profile_counters: Arc<Mutex<ProfileCounters>>,
+    sdists: crate::version_filter::SdistPolicy,
+    exclude_newer: Arc<crate::version_filter::ExcludeNewer>,
+    sdist_builder: Option<crate::sdist::SdistMetadataBuilder>,
+    /// Set once a warning about missing upload times has been printed.
+    warned_no_upload_time: std::sync::atomic::AtomicBool,
 }
 
 /// The process-shared multi-threaded async runtime used by every provider.
@@ -158,18 +163,47 @@ impl PyPIMetadataProvider {
             rp_cache: Mutex::new(HashMap::new()),
             semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_FETCHES)),
             profile_counters: Arc::new(Mutex::new(ProfileCounters::default())),
+            sdists: Default::default(),
+            exclude_newer: Default::default(),
+            sdist_builder: None,
+            warned_no_upload_time: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Set the sdist policy and upload-time cutoff for this resolution.
+    pub fn with_resolution_options(
+        mut self,
+        sdists: crate::version_filter::SdistPolicy,
+        exclude_newer: Arc<crate::version_filter::ExcludeNewer>,
+    ) -> Self {
+        self.sdists = sdists;
+        self.exclude_newer = exclude_newer;
+        self
+    }
+
+    /// Set how to obtain METADATA for sdists without static metadata.
+    pub fn with_sdist_builder(mut self, builder: crate::sdist::SdistMetadataBuilder) -> Self {
+        self.sdist_builder = Some(builder);
+        self
     }
 
     /// Drop versions with no installable distribution for the target
     /// environment, reusing the provider's prebuilt tags and memo cache.
     fn filter_viable(
         &self,
+        package: &str,
         versions: &mut Vec<VypVersion>,
         wheel_info: &HashMap<VypVersion, Vec<WheelInfo>>,
     ) {
-        if crate::version_filter::wheel_filter_disabled() {
-            return;
+        let cutoff = self.exclude_newer.cutoff_for(package);
+        if cutoff.is_some()
+            && wheel_info.values().flatten().any(|w| w.upload_time.is_none())
+            && !self.warned_no_upload_time.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            eprintln!(
+                "warning: {} doesn't report upload times for every file; exclude-newer can't be applied to those files",
+                self.index_url
+            );
         }
         let Some(target) = &self.target_python else { return };
         let mut cache = self.rp_cache.lock().expect("poisoned");
@@ -179,6 +213,7 @@ impl PyPIMetadataProvider {
             &self.platform_tags,
             target,
             &mut cache,
+            &crate::version_filter::FilterOptions { sdists: self.sdists, uploaded_before: cutoff },
         );
     }
 
@@ -392,9 +427,21 @@ impl PyPIMetadataProvider {
         // request into any wheel of this version.
         let wheels = versions.wheel_info.get(version).cloned();
         let pep658_url = wheels.as_ref().and_then(|ws| {
-            ws.iter().find(|w| w.has_metadata).map(|w| w.url.clone())
+            ws.iter().find(|w| w.has_metadata && w.filename.ends_with(".whl")).map(|w| w.url.clone())
         });
         let range_wheel_url = wheels.as_ref().and_then(|ws| best_wheel_url(ws, &self.marker_env));
+        // Last resort: the sdist, when no wheel of this version exists.
+        let sdist_file = if pep658_url.is_none() && range_wheel_url.is_none() {
+            wheels.as_ref().and_then(|ws| {
+                ws.iter()
+                    .filter(|w| crate::version_filter::is_sdist(&w.filename) && !w.yanked)
+                    .min_by_key(|w| !w.filename.ends_with(".tar.gz"))
+                    .cloned()
+            })
+        } else {
+            None
+        };
+        let sdist_builder = self.sdist_builder.clone();
         // With no wheel to read and a failed version list, report that failure
         // rather than an empty dependency list.
         let versions_error = versions.fetch_error.clone()
@@ -437,6 +484,20 @@ impl PyPIMetadataProvider {
                     Err(e) => {
                         tracing::debug!("range metadata fetch failed for {}=={}: {}", pkg, ver, e);
                         None
+                    }
+                }
+            } else if let Some(sdist) = sdist_file {
+                match sdist_metadata(&client, &sdist, sdist_builder, &sem).await {
+                    Ok(text) => Some(metadata_from_text(&text, &pkg, &ver, &env, sdist.url.clone())),
+                    Err(e) => {
+                        let message = format!("cannot get metadata for {}=={} from its sdist: {}", pkg, ver, e);
+                        tracing::warn!("{}", message);
+                        idx.set_metadata(&pkg, &ver, MetadataResult {
+                            dependencies: Vec::new(),
+                            full_metadata: None,
+                            fetch_error: Some(message),
+                        });
+                        return;
                     }
                 }
             } else {
@@ -743,6 +804,9 @@ async fn parse_json_simple_async(
         yanked: serde_json::Value,
         #[serde(default)]
         hashes: std::collections::BTreeMap<String, String>,
+        /// PEP 700.
+        #[serde(default, rename = "upload-time")]
+        upload_time: Option<String>,
     }
 
     let bytes = response.bytes().await?;
@@ -764,8 +828,9 @@ async fn parse_json_simple_async(
 
     for raw in &json.files {
         let raw_str = raw.get();
-        // Quick string check to skip non-wheels without full deserialization
-        if !raw_str.contains(".whl") {
+        // Quick string check to skip eggs and other legacy formats without
+        // full deserialization. Wheels and sdists are kept.
+        if !raw_str.contains(".whl") && !raw_str.contains(".tar.gz") && !raw_str.contains(".zip") {
             if json.versions.is_empty() {
                 // Fallback: extract version from any filename
                 if let Some(fname_start) = raw_str.find("\"filename\"") {
@@ -815,6 +880,7 @@ async fn parse_json_simple_async(
                     requires_python: file.requires_python,
                     yanked,
                     hashes: file.hashes,
+                    upload_time: file.upload_time.as_deref().and_then(crate::timestamp::parse_rfc3339),
                 });
         }
     }
@@ -930,6 +996,35 @@ fn speculative_prefetch_depth() -> usize {
 /// Pick the URL of the most platform-compatible wheel, falling back to any
 /// wheel. A version's `METADATA` is identical across its wheels, so any wheel
 /// works as a metadata source for the ranged-fetch fallback.
+/// METADATA for an sdist: its static `PKG-INFO` (PEP 643), or a build.
+async fn sdist_metadata(
+    client: &reqwest::Client,
+    sdist: &WheelInfo,
+    builder: Option<crate::sdist::SdistMetadataBuilder>,
+    sem: &Semaphore,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let path = crate::sdist::download(
+        client,
+        &sdist.url,
+        &sdist.filename,
+        sdist.hashes.get("sha256").map(String::as_str),
+        sem,
+    )
+    .await?;
+    tokio::task::spawn_blocking(move || {
+        if let Ok(pkg_info) = crate::sdist::read_pkg_info(&path) {
+            if crate::sdist::has_static_requirements(&pkg_info) {
+                return Ok(pkg_info);
+            }
+        }
+        match builder {
+            Some(build) => build(&path).map_err(Into::into),
+            None => Err("its dependencies are dynamic and building sdists isn't enabled".into()),
+        }
+    })
+    .await?
+}
+
 fn best_wheel_url(wheels: &[WheelInfo], env: &MarkerEnvironment) -> Option<String> {
     let tags = PlatformTags::from_env(env);
     let mut best: Option<(u32, &WheelInfo)> = None;
@@ -1015,7 +1110,7 @@ impl MetadataProvider for PyPIMetadataProvider {
         let result = self.index.wait_versions(&normalized);
 
         let mut versions = result.versions.clone();
-        self.filter_viable(&mut versions, &result.wheel_info);
+        self.filter_viable(&normalized, &mut versions, &result.wheel_info);
 
         if versions.is_empty() {
             // Distinguish a real transport failure from "no such package": only
@@ -1138,7 +1233,7 @@ impl MetadataProvider for PyPIMetadataProvider {
         let normalized = package.name().to_lowercase().replace(['-', '.'], "_");
         let result = self.index.try_get_versions(&normalized)?;
         let mut versions = result.versions.clone();
-        self.filter_viable(&mut versions, &result.wheel_info);
+        self.filter_viable(&normalized, &mut versions, &result.wheel_info);
         if versions.is_empty() {
             None
         } else {
@@ -1165,10 +1260,14 @@ impl MetadataProvider for PyPIMetadataProvider {
         let normalized = package.to_lowercase().replace(['-', '.'], "_");
         let wheels = self.index.get_wheel_info(&normalized, version)?;
         let tags = &self.platform_tags;
+        let cutoff = self.exclude_newer.cutoff_for(&normalized);
 
         let mut best: Option<(u32, &WheelInfo)> = None;
         for w in &wheels {
-            if !w.filename.ends_with(".whl") || w.yanked {
+            if !w.filename.ends_with(".whl")
+                || w.yanked
+                || !crate::version_filter::uploaded_by(w, cutoff)
+            {
                 continue;
             }
             if !tags.is_compatible(&w.filename) {
@@ -1186,6 +1285,26 @@ impl MetadataProvider for PyPIMetadataProvider {
             hashes: w.hashes.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             size: None,
         })
+    }
+
+    fn sdist_dist(&self, package: &str, version: &VypVersion) -> Option<vyp_api::WheelDist> {
+        let normalized = package.to_lowercase().replace(['-', '.'], "_");
+        let files = self.index.get_wheel_info(&normalized, version)?;
+        let cutoff = self.exclude_newer.cutoff_for(&normalized);
+        files
+            .iter()
+            .filter(|w| {
+                crate::version_filter::is_sdist(&w.filename)
+                    && !w.yanked
+                    && crate::version_filter::uploaded_by(w, cutoff)
+            })
+            .min_by_key(|w| !w.filename.ends_with(".tar.gz"))
+            .map(|w| vyp_api::WheelDist {
+                filename: w.filename.clone(),
+                url: w.url.clone(),
+                hashes: w.hashes.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                size: None,
+            })
     }
 
     fn profile_data(&self) -> HashMap<String, usize> {

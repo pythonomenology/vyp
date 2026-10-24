@@ -21,14 +21,22 @@ pub struct ResolveArgs {
     /// PyTorch accelerator backend (auto, cpu, cu126, cu128, cu130, rocm6, xpu)
     #[arg(long)]
     pub torch_backend: Option<String>,
+
+    /// Ignore distributions uploaded after this date, timestamp or duration
+    /// ago (e.g. 2026-01-31, P7D, "7 days"). Overrides `exclude-newer`.
+    #[arg(long, env = "VYP_EXCLUDE_NEWER")]
+    pub exclude_newer: Option<String>,
 }
 
 pub fn run(args: ResolveArgs) -> miette::Result<()> {
-    let config = if args.project.exists() {
+    let mut config = if args.project.exists() {
         VypConfig::from_file(&args.project)?
     } else {
         VypConfig::default()
     };
+    if let Some(cutoff) = &args.exclude_newer {
+        config.set_exclude_newer(cutoff)?;
+    }
 
     let extra_reqs: Vec<Requirement> = args
         .requirement

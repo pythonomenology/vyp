@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use vyp_api::traits::resolution_filter::{Candidate, ResolutionFilter};
 
 use crate::PreReleasePolicy;
@@ -11,6 +13,8 @@ use crate::PreReleasePolicy;
 #[derive(Debug)]
 pub struct PreReleaseFilter {
     policy: PreReleasePolicy,
+    /// Normalized names whose pre-releases are always allowed.
+    allowed: HashSet<String>,
 }
 
 impl PreReleaseFilter {
@@ -21,11 +25,18 @@ impl PreReleaseFilter {
             } else {
                 PreReleasePolicy::Disallow
             },
+            allowed: HashSet::new(),
         }
     }
 
     pub fn with_policy(policy: PreReleasePolicy) -> Self {
-        Self { policy }
+        Self { policy, allowed: HashSet::new() }
+    }
+
+    /// Allow pre-releases of these packages whatever the policy.
+    pub fn allowing(mut self, packages: HashSet<String>) -> Self {
+        self.allowed = packages;
+        self
     }
 }
 
@@ -40,6 +51,9 @@ impl ResolutionFilter for PreReleaseFilter {
 
     fn filter(&self, candidates: &mut Vec<Candidate>) {
         if self.policy == PreReleasePolicy::Allow || candidates.is_empty() {
+            return;
+        }
+        if self.allowed.contains(candidates[0].package.name()) {
             return;
         }
 

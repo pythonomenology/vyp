@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use vyp_core::{ResolutionResult, WheelUrlInfo};
 
 use crate::config::settings::ForkStrategy;
-use super::lockfile::{package_tool, PyLockPackageTool, PyLockWheel};
+use super::lockfile::{directory_ref, package_tool, vcs_ref, PyLockDirectory, PyLockPackageTool, PyLockSdist, PyLockVcs, PyLockWheel};
 
 /// One package entry in a universal (multi-environment) lockfile.
 #[derive(Debug, Clone)]
@@ -15,6 +15,9 @@ pub struct UniversalPackageEntry {
     pub marker: Option<String>,
     pub tool: Option<PyLockPackageTool>,
     pub wheels: Vec<PyLockWheel>,
+    pub sdist: Option<PyLockSdist>,
+    pub directory: Option<PyLockDirectory>,
+    pub vcs: Option<PyLockVcs>,
 }
 
 /// Parse a marker string of the form `python_version == "X.Y"` to extract "X.Y".
@@ -68,6 +71,14 @@ fn merge_requires_python(
                 marker: Some(marker.clone()),
                 tool,
                 wheels,
+                sdist: result.sdist_urls.get(name.as_str()).map(|info| PyLockSdist {
+                    name: info.filename.clone(),
+                    url: Some(info.url.clone()),
+                    size: None,
+                    hashes: (!info.hashes.is_empty()).then(|| info.hashes.clone()),
+                }),
+                directory: directory_ref(&result, name),
+                vcs: vcs_ref(&result, name),
             });
         }
     }
@@ -112,6 +123,14 @@ fn merge_fewest(env_results: Vec<(String, ResolutionResult)>) -> Vec<UniversalPa
                 marker: marker_for_entry,
                 tool,
                 wheels,
+                sdist: result.sdist_urls.get(name.as_str()).map(|info| PyLockSdist {
+                    name: info.filename.clone(),
+                    url: Some(info.url.clone()),
+                    size: None,
+                    hashes: (!info.hashes.is_empty()).then(|| info.hashes.clone()),
+                }),
+                directory: directory_ref(result, name),
+                vcs: vcs_ref(result, name),
             });
         }
     }

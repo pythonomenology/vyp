@@ -55,6 +55,13 @@ config = { key = "value" }
 | `torch-backend` | string | *(none)* | PyTorch accelerator backend. See [Torch Backend](#torch-backend). |
 | `environments` | array of strings | `[]` | Environment markers for universal resolution. See [Universal Resolution](#universal-resolution). |
 | `fork-strategy` | string | `"requires-python"` | When using multiple environments: `"requires-python"` or `"fewest"`. See [Universal Resolution](#universal-resolution). |
+| `pre-release-packages` | array of strings | `[]` | Packages whose pre-releases are allowed whatever `pre-releases` says. See [Resolution](../concepts/resolution.md#pre-releases-for-specific-packages). |
+| `python` | string | *(none)* | Interpreter for the project's `.venv`: `3.12`, `>=3.11`, `3.13t` or a path. See [Python](../guides/python.md). |
+| `sdists` | string | `"fallback"` | When versions that need an sdist build are considered: `"never"`, `"fallback"`, `"allow"`. See [Source Distributions](../guides/dependencies.md#source-distributions). |
+| `exclude-newer` | string | *(none)* | Ignore files uploaded after a date, timestamp, or duration ago (`"P7D"`, `"7 days"`). See [Supply-Chain Safety](../guides/supply-chain.md). |
+| `[tool.vyp.exclude-newer-package]` | table | `{}` | Per-package cutoffs: `pkg = "2026-01-01"`, or `pkg = false` to exempt it. |
+| `startup-files` | string | `"warn"` | Packages that install code run at every interpreter start: `"warn"`, `"deny"`, `"allow"`. |
+| `allow-startup-files` | array of strings | `[]` | Packages allowed to ship startup files. |
 
 ### Resolution Strategy
 
@@ -142,8 +149,15 @@ Each key is a package name; the value is an array of source entries:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `index` | string | *(required)* | Name of an extra index (from `[[tool.vyp.extra-index]]`). |
+| `index` | string | — | Name of an extra index (from `[[tool.vyp.extra-index]]`). |
+| `path` | string | — | A local source tree, relative to `pyproject.toml`. |
+| `editable` | boolean | `false` | With `path`: install it in editable mode. |
+| `git` | string | — | A git repository URL. |
+| `rev` / `tag` / `branch` | string | *(HEAD)* | With `git`: what to check out. |
+| `subdirectory` | string | — | With `git`: the package's directory in the repository. |
 | `marker` | string | *(none)* | Optional PEP 508 environment marker (e.g. `sys_platform == 'linux'`). |
+
+Each entry sets exactly one of `index`, `path` or `git`. See [Local, Editable and Git Dependencies](../guides/dependencies.md#local-editable-and-git-dependencies).
 
 ---
 
