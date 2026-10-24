@@ -68,6 +68,7 @@ nav:
       - Dependencies: guides/dependencies.md
       - Lock Files: guides/lockfiles.md
       - Overrides & Conflicts: guides/overrides.md
+      - Errata: guides/errata.md
       - PyTorch: guides/pytorch.md
       - Package Indexes: guides/indexes.md
       - Plugins: guides/plugins.md

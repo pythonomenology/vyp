@@ -162,6 +162,20 @@ Each `[[tool.vyp.overrides]]` entry:
 | `transitive` | boolean | `false` | If `true`, propagate to consumers via `vyp-overrides.toml`. |
 | `reason` | string | *(none)* | Human-readable reason for the override. |
 
+### Inherited overrides
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `inherit-overrides` | boolean or array of strings | `true` | Apply overrides that selected dependencies ship in their wheels' `vyp-overrides.toml`. `false` ignores them; an array allows only the listed packages. See [Transitive Conflicts](../concepts/transitive-conflicts.md#what-consumers-do-with-it). |
+
+---
+
+## Errata
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `errata` | array of strings | `[]` | Errata feeds: URLs, or paths relative to the project directory. See [Errata](../guides/errata.md). |
+
 ---
 
 ## Substitutions

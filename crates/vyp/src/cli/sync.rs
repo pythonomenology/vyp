@@ -56,10 +56,11 @@ pub fn run(args: SyncArgs) -> miette::Result<()> {
             resolve_from_config(&config, &[], args.torch_backend.as_deref(), None)?;
         let lockfile = match &resolve_out {
             ResolveOut::Single(result) => LockFile::from_resolution(result),
-            ResolveOut::Universal { entries, environments } => LockFile::from_universal_resolution(
+            ResolveOut::Universal { entries, environments, errata_feeds } => LockFile::from_universal_resolution(
                 entries,
                 environments,
                 config.requires_python.as_deref(),
+                errata_feeds,
             ),
         };
         (lockfile, Some(config.index_url.clone()), Some(client))

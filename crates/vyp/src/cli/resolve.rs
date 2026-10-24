@@ -104,7 +104,7 @@ pub fn run(args: ResolveArgs) -> miette::Result<()> {
                 }
             }
         }
-        ResolveOut::Universal { entries, environments } => {
+        ResolveOut::Universal { entries, environments, .. } => {
             if !is_tty {
                 let elapsed = start.elapsed();
                 eprintln!(

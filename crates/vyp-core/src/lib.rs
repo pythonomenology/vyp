@@ -1,8 +1,10 @@
+pub mod errata;
 pub mod index_router;
 pub mod plugin;
 pub mod resolver;
 pub mod strategies;
 
+pub use errata::{ErrataFeedDigest, Erratum};
 pub use index_router::IndexRouter;
 
 use std::collections::HashMap;
@@ -14,7 +16,7 @@ use version_ranges::Ranges;
 use vyp_api::{
     VypPackage, VypVersion, DependencyOverride, Requirement,
     ResolutionProvenance, SubstitutionSet, SelectionReason,
-    ConflictSet,
+    ConflictSet, normalize_package_name,
 };
 use vyp_api::traits::conflict_strategy::{ConflictContext, StrategyVerdict};
 use vyp_api::traits::resolution_filter::Candidate;
@@ -25,6 +27,8 @@ use resolver::{requirements_to_range, SolverState, SolverError, PackageId, VS};
 use strategies::override_strategy::OverrideConflictStrategy;
 
 type DepsCache = HashMap<(String, VypVersion), Arc<Vec<(VypPackage, VS)>>>;
+/// Normalized package name -> the range every requirement on it is replaced with.
+type OverrideRanges = HashMap<String, VS>;
 use strategies::substitution::{SubstitutionFilter, SubstitutionStrategy};
 use strategies::transitive_fork::TransitiveForkStrategy;
 
@@ -52,6 +56,13 @@ pub struct ResolutionResult {
     pub wheel_urls: HashMap<String, WheelUrlInfo>,
     /// Timing breakdown (populated when `VYP_PROFILE=1`).
     pub timing: Option<ResolveTiming>,
+    /// Overrides in effect for this resolution, including inherited ones.
+    pub overrides: Vec<DependencyOverride>,
+    /// Errata in effect for this resolution.
+    pub errata: Vec<Erratum>,
+    /// Errata feeds consulted, with the digest of the content used. Filled in
+    /// by the caller that loaded the feeds.
+    pub errata_feeds: Vec<ErrataFeedDigest>,
 }
 
 /// Timing breakdown of the resolve phase.
@@ -118,16 +129,23 @@ pub enum ResolveProgress {
     Complete { package_count: usize },
 }
 
+/// Called on the solver thread each time a release is selected, with the
+/// wheel that would be installed for it. Must not block: use it to start
+/// background work that the caller collects after resolution.
+pub type SelectionHook = Box<dyn Fn(&str, &VypVersion, &vyp_api::WheelDist) + Send>;
+
 /// Builder for configuring and running the resolver.
 pub struct ResolverBuilder {
     root_dependencies: Vec<Requirement>,
     overrides: Vec<DependencyOverride>,
+    errata: Vec<Erratum>,
     substitutions: Vec<SubstitutionSet>,
     plugin_loader: PluginLoader,
     resolution_strategy: ResolutionStrategy,
     pre_release_policy: PreReleasePolicy,
     warm_start: Option<WarmStartData>,
     progress: Option<Box<dyn Fn(ResolveProgress) + Send>>,
+    on_select: Option<SelectionHook>,
     index_router: Arc<IndexRouter>,
 }
 
@@ -137,12 +155,14 @@ impl ResolverBuilder {
         Self {
             root_dependencies: Vec::new(),
             overrides: Vec::new(),
+            errata: Vec::new(),
             substitutions: Vec::new(),
             plugin_loader: PluginLoader::new(),
             resolution_strategy: ResolutionStrategy::default(),
             pre_release_policy: PreReleasePolicy::default(),
             warm_start: None,
             progress: None,
+            on_select: None,
             index_router: IndexRouter::new(),
         }
     }
@@ -169,6 +189,12 @@ impl ResolverBuilder {
     /// Set dependency overrides (unified: range constraints and exact pins).
     pub fn with_overrides(mut self, overrides: Vec<DependencyOverride>) -> Self {
         self.overrides = overrides;
+        self
+    }
+
+    /// Set metadata errata: corrections to already-published releases.
+    pub fn with_errata(mut self, errata: Vec<Erratum>) -> Self {
+        self.errata = errata;
         self
     }
 
@@ -199,6 +225,12 @@ impl ResolverBuilder {
     /// Set a progress callback invoked during resolution.
     pub fn with_progress(mut self, cb: impl Fn(ResolveProgress) + Send + 'static) -> Self {
         self.progress = Some(Box::new(cb));
+        self
+    }
+
+    /// Set a hook invoked whenever the solver selects a release.
+    pub fn with_selection_hook(mut self, hook: SelectionHook) -> Self {
+        self.on_select = Some(hook);
         self
     }
 
@@ -236,8 +268,19 @@ impl ResolverBuilder {
         let pin_map: HashMap<String, String> = self
             .overrides
             .iter()
-            .filter_map(|o| o.pinned_version().map(|v| (o.package.clone(), v.to_string())))
+            .filter_map(|o| {
+                o.pinned_version()
+                    .map(|v| (normalize_package_name(&o.package), v.to_string()))
+            })
             .collect();
+
+        let override_ranges = override_range_map(self.overrides.iter())?;
+        // Overrides inherited from dependencies rewrite edges between
+        // dependencies, never the project's own direct requirements.
+        let root_override_ranges =
+            override_range_map(self.overrides.iter().filter(|o| o.origin.is_none()))?;
+        let applied_overrides = self.overrides.clone();
+        let applied_errata = self.errata.clone();
 
         if !range_overrides.is_empty() {
             self.plugin_loader
@@ -254,6 +297,12 @@ impl ResolverBuilder {
             self.plugin_loader.filters.register(Box::new(
                 SubstitutionFilter::new(self.substitutions.clone()),
             ));
+        }
+
+        if self.errata.iter().any(|e| e.exclude) {
+            self.plugin_loader
+                .filters
+                .register(Box::new(errata::ErrataFilter::new(self.errata.clone())));
         }
 
         if self.pre_release_policy != PreReleasePolicy::Allow {
@@ -283,7 +332,10 @@ impl ResolverBuilder {
             .root_dependencies
             .iter()
             .map(|req| {
-                let range = requirements_to_range(&req.constraints);
+                let range = root_override_ranges
+                    .get(req.package.name())
+                    .cloned()
+                    .unwrap_or_else(|| requirements_to_range(&req.constraints));
                 let pkg_id = solver.get_or_create_package(&req.package);
                 (pkg_id, range)
             })
@@ -353,16 +405,22 @@ impl ResolverBuilder {
                     root_id,
                     &root_version,
                     &pin_map,
+                    &override_ranges,
+                    &self.errata,
                     sort_ascending,
                     &self.plugin_loader,
                     &self.progress,
+                    &self.on_select,
                     &self.index_router,
                 );
                 let _ = result_tx.send(result);
             })
             .expect("failed to spawn solver thread");
 
-        result_rx.recv().expect("solver thread panicked")
+        let mut result = result_rx.recv().expect("solver thread panicked")?;
+        result.overrides = applied_overrides;
+        result.errata = applied_errata;
+        Ok(result)
     }
 
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -377,9 +435,12 @@ impl ResolverBuilder {
         _root_id: PackageId,
         _root_version: &VypVersion,
         pin_map: &HashMap<String, String>,
+        override_ranges: &OverrideRanges,
+        errata: &[Erratum],
         sort_ascending: bool,
         plugin_loader: &PluginLoader,
         progress: &Option<Box<dyn Fn(ResolveProgress) + Send>>,
+        on_select: &Option<SelectionHook>,
         index_router: &IndexRouter,
     ) -> Result<ResolutionResult, VypError> {
         let profiling = std::env::var("VYP_PROFILE").is_ok_and(|v| v == "1");
@@ -534,6 +595,9 @@ impl ResolverBuilder {
                     inherited_conflicts: std::mem::take(inherited_conflicts),
                     wheel_urls,
                     timing,
+                    overrides: Vec::new(),
+                    errata: Vec::new(),
+                    errata_feeds: Vec::new(),
                 });
             };
             *next_pkg = pkg_id;
@@ -584,6 +648,12 @@ impl ResolverBuilder {
                 Vec::new(),
             );
 
+            if let Some(hook) = on_select {
+                if let Some(dist) = plugin_loader.providers.wheel_dist(pkg.name(), &version) {
+                    hook(pkg.name(), &version, &dist);
+                }
+            }
+
             // 5. Get dependencies
             let deps = get_dependencies(
                 &pkg,
@@ -595,6 +665,8 @@ impl ResolverBuilder {
                 provenance,
                 inherited_conflicts,
                 pin_map,
+                override_ranges,
+                errata,
                 sort_ascending,
                 version_cache,
                 &mut metadata_wait_ns,
@@ -624,6 +696,28 @@ impl Default for ResolverBuilder {
 // ---------------------------------------------------------------------------
 // Helper functions for fetching versions and dependencies
 // ---------------------------------------------------------------------------
+
+/// Parse overrides into the ranges that replace every requirement on each
+/// overridden package. Several overrides on one package intersect.
+fn override_range_map<'a>(
+    overrides: impl Iterator<Item = &'a DependencyOverride>,
+) -> Result<OverrideRanges, VypError> {
+    let mut map: OverrideRanges = HashMap::new();
+    for o in overrides {
+        let spec = format!("{} {}", o.package, o.constraint);
+        let req: Requirement = spec.parse().map_err(|_| {
+            VypError::ResolutionError(format!(
+                "invalid override constraint for {}: '{}'",
+                o.package, o.constraint
+            ))
+        })?;
+        let range = requirements_to_range(&req.constraints);
+        map.entry(req.package.name().to_string())
+            .and_modify(|r| *r = r.intersection(&range))
+            .or_insert(range);
+    }
+    Ok(map)
+}
 
 #[allow(clippy::too_many_arguments)]
 fn get_versions(
@@ -720,6 +814,8 @@ fn get_dependencies(
     provenance: &mut ResolutionProvenance,
     inherited_conflicts: &mut HashMap<String, ConflictSet>,
     _pin_overrides: &HashMap<String, String>,
+    override_ranges: &OverrideRanges,
+    errata: &[Erratum],
     _sort_ascending: bool,
     version_cache: &mut HashMap<String, Arc<Vec<VypVersion>>>,
     metadata_wait_ns: &mut u128,
@@ -773,6 +869,27 @@ fn get_dependencies(
                     }
                 }
                 break;
+            }
+        }
+    }
+
+    // Errata add requirements the release should have declared. An erratum
+    // on a package that is already a dependency narrows its range.
+    for erratum in errata.iter().filter(|e| e.applies_to(package.name(), version)) {
+        let requester = format!("{}=={} (erratum)", package.name(), version);
+        for req in &erratum.requires {
+            let range = requirements_to_range(&req.constraints);
+            if let Some((_, existing)) = deps.iter_mut().find(|(p, _)| p == &req.package) {
+                *existing = existing.intersection(&range);
+            } else {
+                deps.push((req.package.clone(), range));
+            }
+            let dep_record = provenance
+                .records
+                .entry(req.package.name().to_string())
+                .or_default();
+            if !dep_record.requested_by.contains(&requester) {
+                dep_record.requested_by.push(requester.clone());
             }
         }
     }
@@ -879,6 +996,14 @@ fn get_dependencies(
                 }
                 StrategyVerdict::Fail { .. } => break,
             }
+        }
+    }
+
+    // Overrides are the final word: they replace whatever range this release
+    // (or an erratum, or a strategy) asked for.
+    for (pkg, range) in &mut deps {
+        if let Some(forced) = override_ranges.get(pkg.name()) {
+            *range = forced.clone();
         }
     }
 
@@ -1530,3 +1655,159 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod override_and_errata_tests {
+    use super::*;
+    use vyp_api::{ComparisonOp, Requirement};
+    use vyp_index::OfflineMetadataProvider;
+
+    fn v(major: u32, minor: u32) -> VypVersion {
+        VypVersion::from_parts(major, minor, 0)
+    }
+
+    fn req(name: &str, op: ComparisonOp, version: VypVersion) -> Requirement {
+        Requirement::new(name).with_constraint(op, version)
+    }
+
+    fn numpy_provider() -> OfflineMetadataProvider {
+        let mut p = OfflineMetadataProvider::new();
+        p.add_package("numpy", v(1, 24), vec![]);
+        p.add_package("numpy", v(1, 26), vec![]);
+        p.add_package("numpy", v(2, 0), vec![]);
+        p
+    }
+
+    #[test]
+    fn range_override_applies_without_inherited_conflicts() {
+        let mut p = numpy_provider();
+        p.add_package("pkg-b", v(1, 0), vec![req("numpy", ComparisonOp::Gte, v(1, 0))]);
+
+        let result = ResolverBuilder::new()
+            .with_provider(Box::new(p))
+            .with_overrides(vec![DependencyOverride::new("numpy", "<2")])
+            .add_dependency(Requirement::new("pkg-b"))
+            .resolve()
+            .unwrap();
+
+        assert_eq!(result.packages["numpy"], v(1, 26));
+    }
+
+    #[test]
+    fn override_replaces_conflicting_constraints() {
+        // lib-a wants numpy>=1.26 and lib-b wants numpy<1.25: unsolvable
+        // unless the override replaces both requirements.
+        let mut p = numpy_provider();
+        p.add_package("lib-a", v(1, 0), vec![req("numpy", ComparisonOp::Gte, v(1, 26))]);
+        p.add_package("lib-b", v(1, 0), vec![req("numpy", ComparisonOp::Lt, v(1, 25))]);
+
+        let result = ResolverBuilder::new()
+            .with_provider(Box::new(p))
+            .with_overrides(vec![DependencyOverride::new("numpy", ">=1.26,<2")])
+            .add_dependency(Requirement::new("lib-a"))
+            .add_dependency(Requirement::new("lib-b"))
+            .resolve()
+            .unwrap();
+
+        assert_eq!(result.packages["numpy"], v(1, 26));
+    }
+
+    #[test]
+    fn pin_override_matches_unnormalized_names() {
+        let mut p = OfflineMetadataProvider::new();
+        p.add_package("scikit-learn", v(1, 3), vec![]);
+        p.add_package("scikit-learn", v(1, 5), vec![]);
+
+        let result = ResolverBuilder::new()
+            .with_provider(Box::new(p))
+            .with_overrides(vec![DependencyOverride::new("Scikit-Learn", "==1.3.0")])
+            .add_dependency(Requirement::new("scikit-learn"))
+            .resolve()
+            .unwrap();
+
+        assert_eq!(result.packages["scikit_learn"], v(1, 3));
+    }
+
+    #[test]
+    fn excluding_erratum_skips_broken_releases() {
+        let mut p = OfflineMetadataProvider::new();
+        p.add_package("green", v(3, 9), vec![]);
+        p.add_package("green", v(4, 0), vec![]);
+        p.add_package("green", v(4, 1), vec![]);
+
+        // 4.1 is broken on this interpreter; 4.0 is fine.
+        let mut erratum = Erratum::new("green", Ranges::singleton(v(4, 1)), "test-feed");
+        erratum.exclude = true;
+
+        let result = ResolverBuilder::new()
+            .with_provider(Box::new(p))
+            .with_errata(vec![erratum])
+            .add_dependency(Requirement::new("green"))
+            .resolve()
+            .unwrap();
+
+        assert_eq!(result.packages["green"], v(4, 0));
+    }
+
+    #[test]
+    fn requiring_erratum_adds_missing_upper_bound() {
+        let mut p = OfflineMetadataProvider::new();
+        p.add_package("libx", v(1, 0), vec![]);
+        p.add_package("libx", v(2, 0), vec![]);
+        p.add_package("app-lib", v(1, 0), vec![Requirement::new("libx")]);
+        p.add_package("other", v(1, 0), vec![]);
+
+        let mut erratum = Erratum::new("app-lib", Ranges::full(), "test-feed");
+        erratum.requires = vec![
+            req("libx", ComparisonOp::Lt, v(2, 0)),
+            Requirement::new("other"),
+        ];
+
+        let result = ResolverBuilder::new()
+            .with_provider(Box::new(p))
+            .with_errata(vec![erratum])
+            .add_dependency(Requirement::new("app-lib"))
+            .resolve()
+            .unwrap();
+
+        assert_eq!(result.packages["libx"], v(1, 0));
+        assert!(result.packages.contains_key("other"));
+        assert!(result.provenance.records["other"]
+            .requested_by
+            .iter()
+            .any(|r| r.contains("erratum")));
+    }
+}
+
+#[cfg(test)]
+mod inherited_override_tests {
+    use super::*;
+    use vyp_api::{ComparisonOp, Requirement};
+    use vyp_index::OfflineMetadataProvider;
+
+    #[test]
+    fn inherited_override_does_not_replace_direct_requirements() {
+        let mut p = OfflineMetadataProvider::new();
+        p.add_package("libx", VypVersion::from_parts(1, 0, 0), vec![]);
+        p.add_package("libx", VypVersion::from_parts(2, 0, 0), vec![]);
+        p.add_package("lib-a", VypVersion::from_parts(1, 0, 0), vec![
+            Requirement::new("libx").with_constraint(ComparisonOp::Lt, VypVersion::from_parts(2, 0, 0)),
+        ]);
+
+        let mut inherited = DependencyOverride::new("libx", "<2").inherit_through("lib-a");
+        inherited.transitive = true;
+
+        // The project asks for libx>=2 directly; lib-a's inherited override
+        // must not silently replace that, so this has no solution.
+        let err = ResolverBuilder::new()
+            .with_provider(Box::new(p))
+            .with_overrides(vec![inherited])
+            .add_dependency(Requirement::new("lib-a"))
+            .add_dependency(
+                Requirement::new("libx").with_constraint(ComparisonOp::Gte, VypVersion::from_parts(2, 0, 0)),
+            )
+            .resolve();
+        assert!(err.is_err());
+    }
+}
+

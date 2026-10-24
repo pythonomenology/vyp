@@ -16,7 +16,8 @@ vyp solves dependency resolution for Python projects with features not found in 
 - **Plugin System** — Extensible conflict strategies, metadata providers, and resolution filters without modifying the core solver
 - **Package Substitution** — Declare interchangeable packages (e.g., `opencv-python` and `opencv-python-headless`)
 - **Dependency Provenance** — Full causal chain explaining why each version was selected
-- **Unified Dependency Overrides** — Range constraints and exact pins in a single `[[tool.vyp.overrides]]` array, with optional transitive propagation
+- **Unified Dependency Overrides** — Range constraints and exact pins in a single `[[tool.vyp.overrides]]` array; libraries ship transitive overrides in their wheels and consumers inherit them
+- **Errata Feeds** — Correct the `Requires-Dist`/`Requires-Python` of releases that are already published, or exclude broken ones, without waiting for a new upload
 - **PEP 751 Lock Files** — Standards-compliant `pylock.toml` output, with pinned wheel integrity hashes
 - **Platform-aware Resolution** — Versions with no installable wheel for the target environment are filtered out (libc-aware manylinux/musllinux tags, current-macOS deployment targets, free-threaded ABIs), so the resolver backtracks to an installable version instead of locking an unusable one
 - **`Requires-Python` & Yank Enforcement** — Versions are excluded when their distributions don't match the target Python (PEP 440) or are yanked (PEP 592)
@@ -193,6 +194,7 @@ Add to your `pyproject.toml`:
 [tool.vyp]
 resolution-strategy = "highest"  # highest | lowest | lowest-direct
 pre-releases = "disallow"        # allow | disallow | if-necessary
+errata = ["ci/errata.toml"]      # corrections to already-published releases
 
 # Dependency overrides (range constraint, local only by default)
 [[tool.vyp.overrides]]

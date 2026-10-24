@@ -1,5 +1,5 @@
 use vyp_api::{SelectionReason, VariantDescriptor};
-use vyp_core::ResolutionResult;
+use vyp_core::{ErrataFeedDigest, ResolutionResult};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -24,6 +24,44 @@ pub struct PyLockFile {
     #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "default-groups")]
     pub default_groups: Vec<String>,
     pub packages: Vec<PyLockPackage>,
+    /// Tool-specific, lock-level metadata (`[tool.vyp]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<PyLockTool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PyLockTool {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vyp: Option<VypLockTool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct VypLockTool {
+    /// Errata feeds consulted, with the digest of the content used.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "errata-feeds")]
+    pub errata_feeds: Vec<LockedErrataFeed>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockedErrataFeed {
+    pub source: String,
+    pub sha256: String,
+}
+
+impl PyLockTool {
+    fn from_feeds(feeds: &[ErrataFeedDigest]) -> Option<Self> {
+        if feeds.is_empty() {
+            return None;
+        }
+        Some(Self {
+            vyp: Some(VypLockTool {
+                errata_feeds: feeds
+                    .iter()
+                    .map(|f| LockedErrataFeed { source: f.source.clone(), sha256: f.sha256.clone() })
+                    .collect(),
+            }),
+        })
+    }
 }
 
 /// A single package entry in `pylock.toml`.
@@ -90,6 +128,116 @@ pub struct VypProvenance {
     pub conflict_with: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution_path: Option<String>,
+    /// Overrides that replaced every requirement on this package.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overrides: Vec<LockedOverride>,
+    /// Errata that excluded releases of this package or changed the
+    /// selected release's requirements.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errata: Vec<LockedErratum>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockedOverride {
+    pub constraint: String,
+    /// `pyproject.toml`, or the release that shipped the override.
+    pub origin: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockedErratum {
+    /// Affected releases (empty = all).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub versions: String,
+    /// `exclude`: matching releases were never selected. `requires`: the
+    /// selected release gained `requires`.
+    pub effect: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub source: String,
+}
+
+/// The `[packages.tool.vyp]` table for one resolved package.
+pub fn package_tool(result: &ResolutionResult, name: &str) -> Option<PyLockPackageTool> {
+    let record = result.provenance.records.get(name);
+    let version = result.packages.get(name);
+
+    let overrides: Vec<LockedOverride> = result
+        .overrides
+        .iter()
+        .filter(|o| vyp_api::normalize_package_name(&o.package) == name)
+        .map(|o| LockedOverride {
+            constraint: o.constraint.clone(),
+            origin: crate::lock::shipped_overrides::describe_origin(o),
+            reason: o.reason.clone(),
+        })
+        .collect();
+
+    let errata: Vec<LockedErratum> = result
+        .errata
+        .iter()
+        .filter(|e| e.package == name)
+        .filter_map(|e| {
+            let requires_apply = !e.requires.is_empty()
+                && version.is_some_and(|v| e.applies_to(name, v));
+            let effect = if e.exclude {
+                "exclude"
+            } else if requires_apply {
+                "requires"
+            } else {
+                return None;
+            };
+            Some(LockedErratum {
+                versions: e.versions_spec.clone(),
+                effect: effect.to_string(),
+                requires: if effect == "requires" {
+                    e.requires.iter().map(requirement_to_string).collect()
+                } else {
+                    Vec::new()
+                },
+                reason: e.reason.clone(),
+                source: e.source.clone(),
+            })
+        })
+        .collect();
+
+    if record.is_none() && overrides.is_empty() && errata.is_empty() {
+        return None;
+    }
+    let record = record.cloned().unwrap_or_default();
+    Some(PyLockPackageTool {
+        vyp: Some(VypProvenance {
+            selected_by: selection_reason_str(&record.selected_by),
+            requested_by: record.requested_by,
+            conflict_with: record.conflict_with,
+            resolution_path: record.resolution_path,
+            overrides,
+            errata,
+        }),
+    })
+}
+
+fn requirement_to_string(req: &vyp_api::Requirement) -> String {
+    let spec: Vec<String> = req
+        .constraints
+        .iter()
+        .map(|c| format!("{}{}", c.op, c.version))
+        .collect();
+    format!("{}{}", req.package.name(), spec.join(","))
+}
+
+pub fn selection_reason_str(reason: &SelectionReason) -> String {
+    match reason {
+        SelectionReason::Normal => "normal".to_string(),
+        SelectionReason::ConflictResolution => "conflict-resolution".to_string(),
+        SelectionReason::Override => "override".to_string(),
+        SelectionReason::Substitution => "substitution".to_string(),
+        SelectionReason::PluginStrategy(s) => format!("plugin:{}", s),
+    }
 }
 
 impl PyLockFile {
@@ -101,24 +249,7 @@ impl PyLockFile {
         let packages: Vec<PyLockPackage> = sorted_packages
             .into_iter()
             .map(|(name, version)| {
-                let tool = result.provenance.records.get(name).map(|r| {
-                    PyLockPackageTool {
-                        vyp: Some(VypProvenance {
-                            selected_by: match &r.selected_by {
-                                SelectionReason::Normal => "normal".to_string(),
-                                SelectionReason::ConflictResolution => {
-                                    "conflict-resolution".to_string()
-                                }
-                                SelectionReason::Override => "override".to_string(),
-                                SelectionReason::Substitution => "substitution".to_string(),
-                                SelectionReason::PluginStrategy(s) => format!("plugin:{}", s),
-                            },
-                            requested_by: r.requested_by.clone(),
-                            conflict_with: r.conflict_with.clone(),
-                            resolution_path: r.resolution_path.clone(),
-                        }),
-                    }
-                });
+                let tool = package_tool(result, name);
 
                 let wheels = result.wheel_urls.get(name.as_str())
                     .map(|info| vec![PyLockWheel {
@@ -157,6 +288,7 @@ impl PyLockFile {
             dependency_groups: Vec::new(),
             default_groups: Vec::new(),
             packages,
+            tool: PyLockTool::from_feeds(&result.errata_feeds),
         }
     }
 
@@ -165,6 +297,7 @@ impl PyLockFile {
         entries: &[UniversalPackageEntry],
         environments: &[String],
         requires_python: Option<&str>,
+        errata_feeds: &[ErrataFeedDigest],
     ) -> Self {
         let packages: Vec<PyLockPackage> = entries
             .iter()
@@ -191,6 +324,7 @@ impl PyLockFile {
             dependency_groups: Vec::new(),
             default_groups: Vec::new(),
             packages,
+            tool: PyLockTool::from_feeds(errata_feeds),
         }
     }
 
@@ -242,6 +376,28 @@ impl PyLockFile {
                 }
                 if let Some(path) = &prov.resolution_path {
                     explanation.push_str(&format!("  Resolution path: {}\n", path));
+                }
+                for o in &prov.overrides {
+                    explanation.push_str(&format!(
+                        "  Override: every requirement on {} replaced with {} (from {}){}\n",
+                        pkg.name,
+                        o.constraint,
+                        o.origin,
+                        o.reason.as_deref().map(|r| format!(" -- {}", r)).unwrap_or_default()
+                    ));
+                }
+                for e in &prov.errata {
+                    let versions = if e.versions.is_empty() { "all releases" } else { e.versions.as_str() };
+                    let effect = match e.effect.as_str() {
+                        "exclude" => format!("releases {} excluded", versions),
+                        _ => format!("this release ({}) also requires {}", versions, e.requires.join(", ")),
+                    };
+                    explanation.push_str(&format!(
+                        "  Erratum: {} [{}]{}\n",
+                        effect,
+                        e.source,
+                        e.reason.as_deref().map(|r| format!(" -- {}", r)).unwrap_or_default()
+                    ));
                 }
             }
         }

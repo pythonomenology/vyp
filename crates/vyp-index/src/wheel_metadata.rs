@@ -25,6 +25,9 @@ use tokio::sync::Semaphore;
 /// end-of-central-directory record plus the central directory of typical
 /// wheels (even large ones list only a few dozen files).
 const TAIL_BYTES: u64 = 64 * 1024;
+/// Smaller tail for optional members looked up in every selected wheel: it
+/// covers most central directories, and a larger one costs one more request.
+pub const SMALL_TAIL_BYTES: u64 = 16 * 1024;
 /// Slack added when fetching a local member to absorb the local extra field
 /// (which may differ in size from the central directory copy).
 const LOCAL_SLACK: usize = 4096;
@@ -57,9 +60,15 @@ async fn range_get(
     url: &str,
     range: &str,
 ) -> Result<Chunk, DynError> {
-    let resp = crate::auth::apply_auth(client.get(url).header(RANGE, range), url)
+    let mut resp = crate::auth::apply_auth(client.get(url).header(RANGE, range), url)
         .send()
         .await?;
+    if resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+        // Some CDNs reject a suffix range longer than the file instead of
+        // returning the whole file; such a file is smaller than the range,
+        // so just fetch all of it.
+        resp = crate::auth::apply_auth(client.get(url), url).send().await?;
+    }
     if !resp.status().is_success() {
         return Err(format!("range fetch failed: {}", resp.status()).into());
     }
@@ -116,8 +125,8 @@ fn read_eocd(buf: &[u8]) -> Option<(u64, u64)> {
     None
 }
 
-/// Scan the central directory for the `*.dist-info/METADATA` entry.
-fn find_metadata_entry(cd: &[u8]) -> Option<CentralEntry> {
+/// Scan the central directory for the first entry whose name matches.
+fn find_entry(cd: &[u8], matches: impl Fn(&[u8]) -> bool) -> Option<CentralEntry> {
     let mut pos = 0usize;
     while pos + 46 <= cd.len() {
         if le_u32(cd, pos) != Some(SIG_CENTRAL) {
@@ -133,7 +142,7 @@ fn find_metadata_entry(cd: &[u8]) -> Option<CentralEntry> {
         let name_start = pos + 46;
         let name = cd.get(name_start..name_start + name_len)?;
 
-        if name.ends_with(b".dist-info/METADATA") {
+        if matches(name) {
             return Some(CentralEntry { method, compressed_size, local_offset });
         }
         pos = name_start + name_len + extra_len + comment_len;
@@ -155,16 +164,45 @@ fn decompress(method: u16, data: &[u8]) -> Result<String, DynError> {
     }
 }
 
+fn is_metadata(name: &[u8]) -> bool {
+    name.ends_with(b".dist-info/METADATA")
+}
+
+/// True for a `.dist-info/` member named `file_name`, at any depth below the
+/// `.dist-info` directory (build backends differ on where extra metadata goes).
+pub fn is_dist_info_file(name: &[u8], file_name: &str) -> bool {
+    let Ok(name) = std::str::from_utf8(name) else {
+        return false;
+    };
+    let mut parts = name.split('/');
+    let in_dist_info = parts.next().is_some_and(|top| top.ends_with(".dist-info"));
+    in_dist_info && name.rsplit('/').next() == Some(file_name)
+}
+
 /// Fetch the `METADATA` contents of a remote wheel via range requests.
 pub async fn fetch_wheel_metadata(
     client: &reqwest::Client,
     wheel_url: &str,
     semaphore: &Semaphore,
 ) -> Result<String, DynError> {
+    fetch_wheel_member(client, wheel_url, semaphore, TAIL_BYTES, is_metadata)
+        .await?
+        .ok_or_else(|| "METADATA not found in wheel".into())
+}
+
+/// Fetch the first member of a remote wheel whose name matches, via range
+/// requests. `Ok(None)` means the wheel was read but has no such member.
+pub async fn fetch_wheel_member(
+    client: &reqwest::Client,
+    wheel_url: &str,
+    semaphore: &Semaphore,
+    tail_bytes: u64,
+    matches: impl Fn(&[u8]) -> bool,
+) -> Result<Option<String>, DynError> {
     let _permit = semaphore.acquire().await.expect("semaphore closed");
 
     // 1. Tail: EOCD + (usually) the whole central directory.
-    let tail = range_get(client, wheel_url, &format!("bytes=-{}", TAIL_BYTES)).await?;
+    let tail = range_get(client, wheel_url, &format!("bytes=-{}", tail_bytes)).await?;
     let (cd_offset, cd_size) = read_eocd(&tail.bytes).ok_or("no end-of-central-directory record")?;
     if cd_offset == 0xFFFF_FFFF || cd_size == 0xFFFF_FFFF {
         return Err("ZIP64 wheel not supported by range fetch".into());
@@ -187,7 +225,9 @@ pub async fn fetch_wheel_metadata(
             .bytes
     };
 
-    let entry = find_metadata_entry(&cd_bytes).ok_or("METADATA not found in wheel")?;
+    let Some(entry) = find_entry(&cd_bytes, matches) else {
+        return Ok(None);
+    };
 
     // 3. Fetch the local member (local header + name + extra + compressed data),
     //    with slack for the local extra field, then inflate.
@@ -207,7 +247,7 @@ pub async fn fetch_wheel_metadata(
     let data_end = data_start + entry.compressed_size as usize;
     let data = lb.get(data_start..data_end).ok_or("local member truncated")?;
 
-    decompress(entry.method, data)
+    decompress(entry.method, data).map(Some)
 }
 
 #[cfg(test)]
@@ -230,7 +270,7 @@ mod tests {
 
         let (cd_offset, cd_size) = read_eocd(&zip).unwrap();
         let cd = &zip[cd_offset as usize..(cd_offset + cd_size) as usize];
-        let entry = find_metadata_entry(cd).unwrap();
+        let entry = find_entry(cd, is_metadata).unwrap();
         assert_eq!(entry.method, 0);
 
         let lb = &zip[entry.local_offset as usize..];
@@ -239,6 +279,15 @@ mod tests {
         let data_start = 30 + name_len + extra_len;
         let data = &lb[data_start..data_start + entry.compressed_size as usize];
         assert_eq!(decompress(entry.method, data).unwrap(), String::from_utf8_lossy(metadata));
+    }
+
+    #[test]
+    fn dist_info_file_matching() {
+        let hit = |n: &str| is_dist_info_file(n.as_bytes(), "vyp-overrides.toml");
+        assert!(hit("demo-1.0.dist-info/vyp-overrides.toml"));
+        assert!(hit("demo-1.0.dist-info/extra_metadata/vyp-overrides.toml"));
+        assert!(!hit("demo/vyp-overrides.toml"));
+        assert!(!hit("demo-1.0.dist-info/not-vyp-overrides.toml"));
     }
 
     /// Minimal ZIP writer: one stored file. Enough to exercise the parser.

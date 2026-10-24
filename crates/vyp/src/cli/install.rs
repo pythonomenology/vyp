@@ -121,11 +121,12 @@ pub fn run(args: InstallArgs) -> miette::Result<()> {
             LockFile::from_resolution(result),
             result.timing.clone(),
         ),
-        ResolveOut::Universal { entries, environments } => (
+        ResolveOut::Universal { entries, environments, errata_feeds } => (
             LockFile::from_universal_resolution(
                 entries,
                 environments,
                 config.requires_python.as_deref(),
+                errata_feeds,
             ),
             None,
         ),

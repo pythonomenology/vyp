@@ -82,6 +82,10 @@ reason = "CVE-2023-43804; older versions have security issues"
 !!! tip "Best practice"
     Always add a `reason` for overrides, especially transitive ones. It helps future maintainers and consumers understand the constraint.
 
+## Overrides Replace Other Requirements
+
+An override replaces every requirement *other packages* place on the overridden package, so it can settle a conflict that has no solution otherwise. It never adds the package to your resolution: if nothing depends on it, the override has no effect.
+
 ## Multiple Overrides
 
 You can define multiple overrides. Each `package` should appear once. If you need to change an override, edit `pyproject.toml` or use `vyp override remove` then `add`.
@@ -143,7 +147,7 @@ vyp override export --output dist/vyp-overrides.toml
 
 This writes `vyp-overrides.toml` containing all transitive dependency overrides.
 
-Consumers that support `vyp-overrides.toml` can automatically apply these constraints.
+Ship the file inside your wheel's `.dist-info` directory and vyp applies it for every consumer that selects your release. See [Transitive Conflicts](../concepts/transitive-conflicts.md#shipping-the-file) for how to include it and the rules that limit what inherited overrides can do.
 
 !!! example "vyp-overrides.toml structure"
     ```toml
@@ -164,5 +168,6 @@ See [Overrides Export Format](../reference/conflict-overrides-format.md) for the
 ## Next Steps
 
 - [Transitive Conflicts](../concepts/transitive-conflicts.md) -- How conflicts propagate through the dependency graph
+- [Errata](errata.md) -- Correct the metadata of releases that are already published
 - [PyTorch](pytorch.md) -- PyTorch index and backend selection
 - [Overrides Export Format](../reference/conflict-overrides-format.md) -- Export file schema

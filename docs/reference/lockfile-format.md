@@ -20,6 +20,7 @@ A lock file pins exact package versions and records provenance. It is determinis
 | `dependency-groups` | array of strings | Requested dependency groups. |
 | `default-groups` | array of strings | Default groups to include. |
 | `packages` | array of package objects | Resolved packages. |
+| `tool.vyp.errata-feeds` | array of tables (optional) | Errata feeds consulted: `source` and the `sha256` of the content used. |
 
 ---
 
@@ -78,6 +79,8 @@ vyp stores provenance in `packages[].tool.vyp`. PEP 751 allows `[tool]` at the p
 | `requested_by` | array of strings | Packages that requested this dependency. |
 | `conflict_with` | array of strings | Packages this version conflicts with. |
 | `resolution_path` | string (optional) | Causal chain of resolution. |
+| `overrides` | array of tables (optional) | Overrides that replaced every requirement on this package: `constraint`, `origin` (`pyproject.toml` or the release that shipped it, e.g. `lib-a==1.0`), `reason`. |
+| `errata` | array of tables (optional) | Errata that affected this package: `versions`, `effect` (`exclude` or `requires`), `requires`, `reason`, `source`. |
 
 ### selected_by Values
 

@@ -85,7 +85,7 @@ pub fn run(args: LockArgs) -> miette::Result<()> {
             }
             LockFile::from_resolution(result)
         }
-        ResolveOut::Universal { entries, environments } => {
+        ResolveOut::Universal { entries, environments, errata_feeds } => {
             if !is_tty {
                 let elapsed = start.elapsed();
                 eprintln!(
@@ -99,6 +99,7 @@ pub fn run(args: LockArgs) -> miette::Result<()> {
                 entries,
                 environments,
                 config.requires_python.as_deref(),
+                errata_feeds,
             )
         }
     };

@@ -61,6 +61,27 @@ impl OverridesExportFile {
         }
     }
 
+    pub fn parse(content: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(content)
+    }
+
+    /// The transitive overrides in this file, as inherited through the
+    /// release `via` (e.g. `lib-a==1.0`) that shipped it.
+    pub fn inherited_overrides(&self, via: &str) -> Vec<DependencyOverride> {
+        self.overrides
+            .iter()
+            .filter(|e| e.transitive)
+            .map(|e| {
+                let mut o = DependencyOverride::new(e.package.clone(), e.constraint.clone())
+                    .with_transitive(true);
+                o.reason = e.reason.clone();
+                o.origin = e.origin.clone();
+                o.propagation_path = e.propagation_path.clone();
+                o.inherit_through(via)
+            })
+            .collect()
+    }
+
     pub fn write_to_file(&self, path: &Path) -> miette::Result<()> {
         let content = toml::to_string_pretty(self)
             .map_err(|e| miette::miette!("Failed to serialize overrides export: {}", e))?;

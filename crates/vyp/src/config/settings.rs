@@ -2,7 +2,7 @@ use vyp_api::{DependencyOverride, MarkerEnvironment, Requirement, SubstitutionSe
 use vyp_core::IndexRouter;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// A named package index.
@@ -53,6 +53,31 @@ pub struct VypConfig {
     pub environments: Vec<String>,
     /// When resolving for multiple environments: requires-python vs fewest.
     pub fork_strategy: ForkStrategy,
+    /// Errata feeds (URLs or paths relative to the project directory).
+    pub errata: Vec<String>,
+    /// Which dependencies may ship overrides that apply to this resolution.
+    pub inherit_overrides: InheritOverrides,
+    /// Directory containing the pyproject.toml this config was read from.
+    pub project_dir: Option<PathBuf>,
+}
+
+/// `inherit-overrides`: `true`, `false`, or an allowlist of package names.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum InheritOverrides {
+    #[default]
+    All,
+    None,
+    Only(HashSet<String>),
+}
+
+impl InheritOverrides {
+    pub fn allows(&self, package: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::None => false,
+            Self::Only(names) => names.contains(&vyp_api::normalize_package_name(package)),
+        }
+    }
 }
 
 impl Default for VypConfig {
@@ -74,6 +99,9 @@ impl Default for VypConfig {
             plugin_loads: Vec::new(),
             environments: Vec::new(),
             fork_strategy: ForkStrategy::default(),
+            errata: Vec::new(),
+            inherit_overrides: InheritOverrides::default(),
+            project_dir: None,
         }
     }
 }
@@ -166,6 +194,17 @@ struct RawVypConfig {
     substitutions: Vec<RawSubstitution>,
     #[serde(default)]
     plugins: Option<RawPlugins>,
+    #[serde(default)]
+    errata: Vec<String>,
+    #[serde(default, rename = "inherit-overrides")]
+    inherit_overrides: Option<RawInheritOverrides>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawInheritOverrides {
+    Enabled(bool),
+    Only(Vec<String>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -226,7 +265,14 @@ impl VypConfig {
     pub fn from_file(path: &Path) -> miette::Result<Self> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| miette::miette!("Failed to read {}: {}", path.display(), e))?;
-        Self::from_str(&content)
+        let mut config = Self::from_str(&content)?;
+        config.project_dir = Some(
+            path.parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from(".")),
+        );
+        Ok(config)
     }
 
     pub fn from_str(content: &str) -> miette::Result<Self> {
@@ -330,6 +376,16 @@ impl VypConfig {
             }
             config.overrides.push(dep_override);
         }
+
+        // Errata feeds and inherited overrides
+        config.errata = vyp.errata;
+        config.inherit_overrides = match vyp.inherit_overrides {
+            None | Some(RawInheritOverrides::Enabled(true)) => InheritOverrides::All,
+            Some(RawInheritOverrides::Enabled(false)) => InheritOverrides::None,
+            Some(RawInheritOverrides::Only(names)) => InheritOverrides::Only(
+                names.iter().map(|n| vyp_api::normalize_package_name(n)).collect(),
+            ),
+        };
 
         // Substitutions
         for raw_sub in vyp.substitutions {
@@ -603,5 +659,33 @@ impl VypConfig {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(tool_vyp: &str) -> VypConfig {
+        VypConfig::from_str(&format!("[tool.vyp]\n{}", tool_vyp)).unwrap()
+    }
+
+    #[test]
+    fn inherit_overrides_defaults_to_all() {
+        assert_eq!(parse("").inherit_overrides, InheritOverrides::All);
+        assert_eq!(parse("inherit-overrides = false").inherit_overrides, InheritOverrides::None);
+    }
+
+    #[test]
+    fn inherit_overrides_allowlist_is_normalized() {
+        let config = parse("inherit-overrides = [\"Lib-A\"]");
+        assert!(config.inherit_overrides.allows("lib_a"));
+        assert!(!config.inherit_overrides.allows("lib_b"));
+    }
+
+    #[test]
+    fn errata_feeds_are_parsed() {
+        let config = parse("errata = [\"https://example.com/e.toml\", \"local.toml\"]");
+        assert_eq!(config.errata, vec!["https://example.com/e.toml", "local.toml"]);
     }
 }

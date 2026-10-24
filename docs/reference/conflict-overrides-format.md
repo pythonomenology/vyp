@@ -56,4 +56,4 @@ propagation_path = ["my-library"]
 
 ## Usage
 
-Consumers of a library that ships `vyp-overrides.toml` can merge these overrides into their own resolution. The format is designed for tooling to read and apply; exact merge semantics are implementation-defined.
+Ship the file anywhere inside your wheel's `.dist-info` directory. When a consumer's resolution selects your release, vyp reads the file from the wheel and applies its `transitive = true` entries as inherited overrides, recording the release that shipped them as their origin. A file whose `package` doesn't match the wheel it was found in is ignored. See [Transitive Conflicts](../concepts/transitive-conflicts.md#what-consumers-do-with-it) for the rules that apply.

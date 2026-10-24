@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 use sha2::{Sha256, Digest};
 use vyp_api::{MarkerEnvironment, MarkerTree, Requirement};
-use vyp_core::{ResolutionResult, ResolverBuilder, ResolveProgress};
+use vyp_api::DependencyOverride;
+use vyp_core::{ErrataFeedDigest, Erratum, ResolutionResult, ResolverBuilder, ResolveProgress};
 use vyp_index::PlatformTags;
 use futures::stream::{self, StreamExt};
 use rayon::prelude::*;
@@ -12,7 +13,9 @@ use rayon::prelude::*;
 use crate::cache::wheel_cache::WheelCache;
 use crate::cache::linker;
 use crate::cache::venv::VenvLayout;
-use crate::config::settings::VypConfig;
+use crate::config::settings::{InheritOverrides, VypConfig};
+use crate::lock::errata::{load_feeds, LoadedErrata};
+use crate::lock::shipped_overrides;
 use crate::lock::lockfile::{LockFile, PyLockPackage};
 use crate::lock::universal::{merge_universal_results, parse_python_version_from_marker, UniversalPackageEntry};
 
@@ -47,8 +50,13 @@ pub enum ResolveOut {
     Universal {
         entries: Vec<UniversalPackageEntry>,
         environments: Vec<String>,
+        errata_feeds: Vec<ErrataFeedDigest>,
     },
 }
+
+/// How many times to re-resolve while overrides shipped by the selected
+/// releases keep changing.
+const MAX_INHERITANCE_ROUNDS: usize = 4;
 
 /// Run dependency resolution from a `VypConfig`, optionally including
 /// extra requirements (e.g. from `vyp add`).
@@ -62,12 +70,22 @@ pub fn resolve_from_config(
     torch_backend: Option<&str>,
     progress: Option<Box<dyn Fn(ResolveProgress) + Send>>,
 ) -> miette::Result<(ResolveOut, reqwest::Client)> {
+    let shared_client = vyp_index::PyPIMetadataProvider::build_default_client();
+    let errata = load_feeds(&config.errata, config.project_dir.as_deref(), &shared_client)?;
+
     if config.environments.is_empty() {
-        let (result, client) = resolve_single(config, extra_reqs, torch_backend, progress)?;
-        return Ok((ResolveOut::Single(result), client));
+        let marker_env = MarkerEnvironment::detect();
+        let result = resolve_environment(
+            config, extra_reqs, torch_backend, &marker_env, &shared_client, &errata, progress,
+        )
+        .map_err(|e| match e {
+            ResolveError::NoSolution(msg) => miette::miette!("No solution found:\n{}", msg),
+            ResolveError::Other(err) => err,
+        })?;
+        report_applied_fixes(&result, None);
+        return Ok((ResolveOut::Single(result), shared_client));
     }
 
-    let shared_client = vyp_index::PyPIMetadataProvider::build_default_client();
     let mut env_results: Vec<(String, ResolutionResult)> = Vec::new();
 
     for marker_str in &config.environments {
@@ -80,72 +98,120 @@ pub fn resolve_from_config(
                 )
             })?;
 
-        let mut builder = ResolverBuilder::new()
-            .with_overrides(config.overrides.clone())
-            .with_substitutions(config.substitutions.clone())
-            .with_resolution_strategy(config.core_resolution_strategy())
-            .with_pre_release_policy(config.core_pre_release_policy());
-
         // Progress callback is not shared across multi-env resolutions (single use per resolve).
-        let _ = progress;
-
-        config.load_plugins(builder.plugin_loader_mut());
-
-        for req_str in &config.dependencies {
-            let req: Requirement = req_str
-                .parse()
-                .map_err(|e| miette::miette!("Invalid requirement '{}': {}", req_str, e))?;
-            builder = builder.add_dependency(req);
-        }
-
-        for req in extra_reqs {
-            builder = builder.add_dependency(req.clone());
-        }
-
-        let (providers, router) = config.create_providers_with_client(
-            torch_backend,
-            Some(&marker_env),
-            Some(shared_client.clone()),
-        )?;
-        for provider in providers {
-            builder = builder.with_provider(provider);
-        }
-        builder = builder.with_index_router(router);
-
-        let result = builder.resolve().map_err(|e| match e {
-            vyp_core::VypError::NoSolution(msg) => {
-                miette::miette!("No solution for {}:\n{}", marker_str, msg)
-            }
-            other => miette::miette!("Resolution failed: {}", other),
+        let result = resolve_environment(
+            config, extra_reqs, torch_backend, &marker_env, &shared_client, &errata, None,
+        )
+        .map_err(|e| match e {
+            ResolveError::NoSolution(msg) => miette::miette!("No solution for {}:\n{}", marker_str, msg),
+            ResolveError::Other(err) => err,
         })?;
+        report_applied_fixes(&result, Some(marker_str));
         env_results.push((marker_str.clone(), result));
     }
+    let _ = progress;
 
     let entries = merge_universal_results(env_results, config.fork_strategy);
     let environments = config.environments.clone();
     Ok((
-        ResolveOut::Universal { entries, environments },
+        ResolveOut::Universal { entries, environments, errata_feeds: errata.feeds },
         shared_client,
     ))
 }
 
-fn resolve_single(
+enum ResolveError {
+    NoSolution(String),
+    Other(miette::Report),
+}
+
+impl From<miette::Report> for ResolveError {
+    fn from(err: miette::Report) -> Self {
+        Self::Other(err)
+    }
+}
+
+/// Resolve for one target environment, applying errata and any overrides
+/// the selected releases ship. Inherited overrides can change which releases
+/// are selected, so re-resolve until the set of inherited overrides is stable.
+fn resolve_environment(
     config: &VypConfig,
     extra_reqs: &[Requirement],
     torch_backend: Option<&str>,
-    progress: Option<Box<dyn Fn(ResolveProgress) + Send>>,
-) -> miette::Result<(ResolutionResult, reqwest::Client)> {
-    let marker_env = MarkerEnvironment::detect();
-    let shared_client = vyp_index::PyPIMetadataProvider::build_default_client();
+    marker_env: &MarkerEnvironment,
+    client: &reqwest::Client,
+    errata: &LoadedErrata,
+    mut progress: Option<Box<dyn Fn(ResolveProgress) + Send>>,
+) -> Result<ResolutionResult, ResolveError> {
+    let env_errata = errata.for_environment(marker_env)?;
+    let prefetcher = (config.inherit_overrides != InheritOverrides::None)
+        .then(|| shipped_overrides::Prefetcher::new(client.clone(), config.inherit_overrides.clone()));
+    let mut inherited: Vec<DependencyOverride> = Vec::new();
+    let mut seen = Vec::new();
 
+    for _ in 0..MAX_INHERITANCE_ROUNDS {
+        let overrides = shipped_overrides::effective_overrides(&config.overrides, &inherited)?;
+        let mut result = resolve_once(
+            config,
+            extra_reqs,
+            torch_backend,
+            marker_env,
+            client,
+            overrides,
+            env_errata.clone(),
+            progress.take(),
+            prefetcher.as_ref(),
+        )?;
+
+        let found = match &prefetcher {
+            Some(p) => shipped_overrides::collect(&result, p)?,
+            None => Vec::new(),
+        };
+        let fingerprint = shipped_overrides::fingerprint(&found);
+        if fingerprint == shipped_overrides::fingerprint(&inherited) {
+            result.errata_feeds = errata.feeds.clone();
+            return Ok(result);
+        }
+        if seen.contains(&fingerprint) {
+            break;
+        }
+        seen.push(fingerprint);
+        inherited = found;
+    }
+
+    Err(ResolveError::Other(miette::miette!(
+        "Overrides shipped by dependencies did not settle after {} resolutions: applying them \
+         selects releases that ship different overrides. Set inherit-overrides to an allowlist \
+         or add [[tool.vyp.overrides]] entries to decide.",
+        MAX_INHERITANCE_ROUNDS
+    )))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_once(
+    config: &VypConfig,
+    extra_reqs: &[Requirement],
+    torch_backend: Option<&str>,
+    marker_env: &MarkerEnvironment,
+    client: &reqwest::Client,
+    overrides: Vec<DependencyOverride>,
+    errata: Vec<Erratum>,
+    progress: Option<Box<dyn Fn(ResolveProgress) + Send>>,
+    prefetcher: Option<&shipped_overrides::Prefetcher>,
+) -> Result<ResolutionResult, ResolveError> {
     let mut builder = ResolverBuilder::new()
-        .with_overrides(config.overrides.clone())
+        .with_overrides(overrides)
+        .with_errata(errata)
         .with_substitutions(config.substitutions.clone())
         .with_resolution_strategy(config.core_resolution_strategy())
         .with_pre_release_policy(config.core_pre_release_policy());
 
     if let Some(cb) = progress {
         builder = builder.with_progress(cb);
+    }
+    if let Some(prefetcher) = prefetcher.cloned() {
+        builder = builder.with_selection_hook(Box::new(move |name, _version, dist| {
+            prefetcher.start(name, &dist.url, dist.hashes.get("sha256").map(String::as_str));
+        }));
     }
 
     config.load_plugins(builder.plugin_loader_mut());
@@ -163,20 +229,46 @@ fn resolve_single(
 
     let (providers, router) = config.create_providers_with_client(
         torch_backend,
-        Some(&marker_env),
-        Some(shared_client.clone()),
+        Some(marker_env),
+        Some(client.clone()),
     )?;
     for provider in providers {
         builder = builder.with_provider(provider);
     }
     builder = builder.with_index_router(router);
 
-    let result = builder.resolve().map_err(|e| match e {
-        vyp_core::VypError::NoSolution(msg) => miette::miette!("No solution found:\n{}", msg),
-        other => miette::miette!("Resolution failed: {}", other),
-    })?;
+    builder.resolve().map_err(|e| match e {
+        vyp_core::VypError::NoSolution(msg) => ResolveError::NoSolution(msg),
+        other => ResolveError::Other(miette::miette!("Resolution failed: {}", other)),
+    })
+}
 
-    Ok((result, shared_client))
+/// Tell the user about corrections they did not write themselves: overrides
+/// shipped by dependencies and errata that touched the selected releases.
+fn report_applied_fixes(result: &ResolutionResult, environment: Option<&str>) {
+    let suffix = environment.map(|e| format!(" ({})", e)).unwrap_or_default();
+    let inherited: Vec<_> = result.overrides.iter().filter(|o| o.origin.is_some()).collect();
+    if !inherited.is_empty() {
+        eprintln!("Applied {} override(s) shipped by dependencies{}:", inherited.len(), suffix);
+        for o in inherited {
+            eprintln!(
+                "  {} {} (from {})",
+                o.package,
+                o.constraint,
+                shipped_overrides::describe_origin(o)
+            );
+        }
+    }
+    let touched = result
+        .errata
+        .iter()
+        .filter(|e| {
+            result.packages.get(&e.package).is_some_and(|v| e.exclude || e.applies_to(&e.package, v))
+        })
+        .count();
+    if touched > 0 {
+        eprintln!("Applied {} erratum/errata to selected packages{}", touched, suffix);
+    }
 }
 
 /// Timing breakdown of the install phase (populated when VYP_PROFILE=1).

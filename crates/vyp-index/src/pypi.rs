@@ -73,7 +73,9 @@ pub struct PyPIMetadataProvider {
 }
 
 /// The process-shared multi-threaded async runtime used by every provider.
-fn shared_runtime() -> Arc<tokio::runtime::Runtime> {
+/// Follow-up fetches that share a provider's client should run here so they
+/// reuse its pooled connections.
+pub fn shared_runtime() -> Arc<tokio::runtime::Runtime> {
     static RUNTIME: std::sync::OnceLock<Arc<tokio::runtime::Runtime>> = std::sync::OnceLock::new();
     RUNTIME
         .get_or_init(|| {
@@ -131,11 +133,11 @@ impl PyPIMetadataProvider {
         marker_env: Option<MarkerEnvironment>,
         shared_client: Option<reqwest::Client>,
     ) -> Self {
-        let cache_dir = Self::default_cache_dir();
+        let index_url_owned = index_url.trim_end_matches('/').to_string();
+        let cache_dir = Self::cache_dir_for(&index_url_owned);
         let disk_cache = Arc::new(Mutex::new(crate::cache::MetadataCache::new(cache_dir)));
         let index = Arc::new(InMemoryIndex::new());
         let marker_env = marker_env.unwrap_or_else(MarkerEnvironment::current);
-        let index_url_owned = index_url.trim_end_matches('/').to_string();
 
         let client = shared_client.unwrap_or_else(Self::build_default_client);
 
@@ -215,6 +217,25 @@ impl PyPIMetadataProvider {
 
     fn default_cache_dir() -> std::path::PathBuf {
         dirs_or_default().join("vyp").join("cache").join("metadata")
+    }
+
+    /// The disk cache is keyed by package name, so each index needs its own
+    /// directory: otherwise one index's cached answer for a package (say,
+    /// PyPI's 404) is served for another index on the next warm run. PyPI
+    /// keeps the original location so existing caches stay warm.
+    fn cache_dir_for(index_url: &str) -> std::path::PathBuf {
+        if index_url == "https://pypi.org/simple" {
+            return Self::default_cache_dir();
+        }
+        let key: String = index_url
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        dirs_or_default()
+            .join("vyp")
+            .join("cache")
+            .join("metadata-indexes")
+            .join(key)
     }
 
     fn matches_filter(&self, package: &str) -> bool {
@@ -1346,6 +1367,17 @@ mod tests {
         .unwrap();
         assert_eq!(wf.build_tag.as_deref(), Some("1"));
         assert_eq!(wf.variant_label.as_deref(), Some("x86_64_v3"));
+    }
+
+    #[test]
+    fn test_cache_dir_is_per_index() {
+        let pypi = PyPIMetadataProvider::cache_dir_for("https://pypi.org/simple");
+        let torch = PyPIMetadataProvider::cache_dir_for("https://download.pytorch.org/whl/cu128");
+        let local = PyPIMetadataProvider::cache_dir_for("http://127.0.0.1:8766/simple");
+        assert_eq!(pypi, PyPIMetadataProvider::default_cache_dir());
+        assert_ne!(torch, pypi);
+        assert_ne!(torch, local);
+        assert!(!torch.starts_with(&local) && !local.starts_with(&torch));
     }
 
     #[test]

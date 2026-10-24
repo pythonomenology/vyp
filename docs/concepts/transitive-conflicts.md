@@ -111,7 +111,34 @@ This produces a `vyp-overrides.toml` file that downstream consumers can use. The
     reason = "Resolved in favor of v2"
     ```
 
-When a consumer adds Library A as a dependency, vyp can load `vyp-overrides.toml` from A's distribution and apply those overrides during resolution.
+### Shipping the file
+
+Put `vyp-overrides.toml` anywhere inside your wheel's `.dist-info` directory. With hatchling:
+
+```toml
+[tool.hatch.build.targets.wheel.extra-metadata]
+"vyp-overrides.toml" = "vyp-overrides.toml"
+```
+
+### What consumers do with it
+
+When the resolver selects a release of Library A, vyp reads `vyp-overrides.toml` from that release's wheel with HTTP range requests (a few KiB; the wheel is never downloaded) and applies its overrides. Reads start as soon as a release is selected, so they overlap the rest of resolution, and the result is cached per wheel. Because inherited overrides can change which releases are selected, vyp re-resolves until the set of inherited overrides stops changing.
+
+Inherited overrides follow a few rules so that a dependency can't take control of your project:
+
+- They replace requirements **between dependencies** only. Your project's own direct requirements always stand.
+- Your own `[[tool.vyp.overrides]]` entry for a package always wins over inherited ones.
+- If two dependencies ship incompatible overrides for the same package, resolution stops and asks you to decide with your own override.
+- Every inherited override is printed when it is applied, recorded in the lock with the release it came from, and shown by `vyp explain`.
+
+Control which dependencies may ship overrides with `inherit-overrides`:
+
+```toml
+[tool.vyp]
+inherit-overrides = true                  # default: any selected dependency
+# inherit-overrides = false               # ignore shipped overrides
+# inherit-overrides = ["library-a"]       # only these packages
+```
 
 ## Comparison with uv and pip
 

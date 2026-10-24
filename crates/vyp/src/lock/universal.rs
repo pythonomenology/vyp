@@ -2,11 +2,10 @@
 //! and apply fork-strategy (requires-python vs fewest).
 
 use std::collections::HashSet;
-use vyp_api::SelectionReason;
 use vyp_core::{ResolutionResult, WheelUrlInfo};
 
 use crate::config::settings::ForkStrategy;
-use super::lockfile::{PyLockPackageTool, PyLockWheel, VypProvenance};
+use super::lockfile::{package_tool, PyLockPackageTool, PyLockWheel};
 
 /// One package entry in a universal (multi-environment) lockfile.
 #[derive(Debug, Clone)]
@@ -57,16 +56,7 @@ fn merge_requires_python(
     let mut entries = Vec::new();
     for (marker, result) in env_results {
         for (name, version) in &result.packages {
-            let tool = result.provenance.records.get(name).map(|r| {
-                PyLockPackageTool {
-                    vyp: Some(VypProvenance {
-                        selected_by: reason_to_string(&r.selected_by),
-                        requested_by: r.requested_by.clone(),
-                        conflict_with: r.conflict_with.clone(),
-                        resolution_path: r.resolution_path.clone(),
-                    }),
-                }
-            });
+            let tool = package_tool(&result, name);
             let wheels = result
                 .wheel_urls
                 .get(name.as_str())
@@ -110,16 +100,7 @@ fn merge_fewest(env_results: Vec<(String, ResolutionResult)>) -> Vec<UniversalPa
             } else {
                 Some(marker.clone())
             };
-            let tool = result.provenance.records.get(name).map(|r| {
-                PyLockPackageTool {
-                    vyp: Some(VypProvenance {
-                        selected_by: reason_to_string(&r.selected_by),
-                        requested_by: r.requested_by.clone(),
-                        conflict_with: r.conflict_with.clone(),
-                        resolution_path: r.resolution_path.clone(),
-                    }),
-                }
-            });
+            let tool = package_tool(result, name);
             let wheels = result
                 .wheel_urls
                 .get(name.as_str())
@@ -140,16 +121,6 @@ fn merge_fewest(env_results: Vec<(String, ResolutionResult)>) -> Vec<UniversalPa
     entries.retain(|e| seen.insert((e.name.clone(), e.version.clone(), e.marker.clone())));
     entries.sort_by(|a, b| a.name.cmp(&b.name).then(a.marker.cmp(&b.marker)));
     entries
-}
-
-fn reason_to_string(r: &SelectionReason) -> String {
-    match r {
-        SelectionReason::Normal => "normal".to_string(),
-        SelectionReason::ConflictResolution => "conflict-resolution".to_string(),
-        SelectionReason::Override => "override".to_string(),
-        SelectionReason::Substitution => "substitution".to_string(),
-        SelectionReason::PluginStrategy(s) => format!("plugin:{}", s),
-    }
 }
 
 fn wheel_info_to_lock_wheels(info: &WheelUrlInfo) -> Vec<PyLockWheel> {
