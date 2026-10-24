@@ -779,12 +779,17 @@ ignored = x:y
             .unwrap()
             .flatten()
             .all(|e| !e.file_name().to_string_lossy().starts_with(".vyp-clone")));
-        // Writing into the venv must not touch the cached archive.
-        std::fs::write(sp.join("ns/a/__init__.py"), "changed").unwrap();
-        assert_eq!(
-            std::fs::read_to_string(a.join("ns/a/__init__.py")).unwrap(),
-            "ns/a/__init__.py"
-        );
+        // A cloned tree is copy-on-write, so writing into the venv leaves the
+        // cached archive alone. Elsewhere files may be hardlinked to the
+        // cache (as uv does by default on Linux), which shares the inode.
+        #[cfg(target_os = "macos")]
+        {
+            std::fs::write(sp.join("ns/a/__init__.py"), "changed").unwrap();
+            assert_eq!(
+                std::fs::read_to_string(a.join("ns/a/__init__.py")).unwrap(),
+                "ns/a/__init__.py"
+            );
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }
