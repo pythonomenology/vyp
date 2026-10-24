@@ -1,5 +1,5 @@
-use vyp_api::{VypVersion, ResolutionProvenance, SelectionReason};
 use std::collections::HashMap;
+use vyp_api::{ResolutionProvenance, SelectionReason, VypVersion};
 
 /// Annotates a resolution result with provenance information.
 pub fn annotate_provenance(

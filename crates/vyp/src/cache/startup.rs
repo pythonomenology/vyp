@@ -56,7 +56,12 @@ impl StartupFile {
         match self.code.first() {
             Some(line) => {
                 let line: String = line.chars().take(80).collect();
-                format!("{} (runs: {}{})", self.path, line, if self.code.len() > 1 { " ..." } else { "" })
+                format!(
+                    "{} (runs: {}{})",
+                    self.path,
+                    line,
+                    if self.code.len() > 1 { " ..." } else { "" }
+                )
             }
             None => format!("{} (imported at startup)", self.path),
         }
@@ -82,10 +87,18 @@ pub fn inspect(archive_dir: &Path, files: &[PathBuf]) -> Vec<StartupFile> {
     let mut found = Vec::new();
     for file in files {
         let rel = file.to_string_lossy().replace('\\', "/");
-        let Some(site_rel) = site_packages_rel(&rel) else { continue };
+        let Some(site_rel) = site_packages_rel(&rel) else {
+            continue;
+        };
         if site_rel.contains('/') {
-            if matches!(site_rel, "sitecustomize/__init__.py" | "usercustomize/__init__.py") {
-                found.push(StartupFile { path: rel.clone(), code: Vec::new() });
+            if matches!(
+                site_rel,
+                "sitecustomize/__init__.py" | "usercustomize/__init__.py"
+            ) {
+                found.push(StartupFile {
+                    path: rel.clone(),
+                    code: Vec::new(),
+                });
             }
             continue;
         }
@@ -104,7 +117,10 @@ pub fn inspect(archive_dir: &Path, files: &[PathBuf]) -> Vec<StartupFile> {
             "sitecustomize.py" | "usercustomize.py" | "sitecustomize.pyc" | "usercustomize.pyc"
         ) || site_rel.starts_with("sitecustomize.") && site_rel.ends_with(".so")
         {
-            found.push(StartupFile { path: rel, code: Vec::new() });
+            found.push(StartupFile {
+                path: rel,
+                code: Vec::new(),
+            });
         }
     }
     found
@@ -175,7 +191,10 @@ mod tests {
         ]);
         let found = inspect(&dir, &files);
         let paths: Vec<&str> = found.iter().map(|f| f.path.as_str()).collect();
-        assert_eq!(paths, vec!["evil.pth", "demo-1.0.data/purelib/sitecustomize.py"]);
+        assert_eq!(
+            paths,
+            vec!["evil.pth", "demo-1.0.data/purelib/sitecustomize.py"]
+        );
         assert_eq!(found[0].code, vec!["import os; os.system('curl x')"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -187,11 +206,17 @@ mod tests {
         assert!(check("demo", &dir, &files, &warn).unwrap().is_some());
         assert!(check("setuptools", &dir, &files, &warn).unwrap().is_none());
 
-        let deny = StartupPolicy { mode: StartupMode::Deny, allowed: ["demo".to_string()].into() };
+        let deny = StartupPolicy {
+            mode: StartupMode::Deny,
+            allowed: ["demo".to_string()].into(),
+        };
         assert!(check("demo", &dir, &files, &deny).unwrap().is_none());
         assert!(check("other", &dir, &files, &deny).is_err());
 
-        let allow = StartupPolicy { mode: StartupMode::Allow, ..Default::default() };
+        let allow = StartupPolicy {
+            mode: StartupMode::Allow,
+            ..Default::default()
+        };
         assert!(check("other", &dir, &files, &allow).unwrap().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }

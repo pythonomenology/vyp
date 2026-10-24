@@ -132,9 +132,7 @@ impl VersionConstraint {
                     true
                 }
             }
-            ComparisonOp::ArbitraryEq => {
-                version.to_string() == self.version.to_string()
-            }
+            ComparisonOp::ArbitraryEq => version.to_string() == self.version.to_string(),
             ComparisonOp::EqStar => {
                 let prefix = &self.version.release;
                 if version.release.len() < prefix.len() {
@@ -218,8 +216,8 @@ impl FromStr for Requirement {
         }
 
         // Parse name and optional extras
-        let (name, extras, rest) = parse_name_extras(main)
-            .map_err(|_| RequirementParseError(s.to_string()))?;
+        let (name, extras, rest) =
+            parse_name_extras(main).map_err(|_| RequirementParseError(s.to_string()))?;
 
         let rest = rest.trim();
 
@@ -430,10 +428,7 @@ mod tests {
             .parse()
             .unwrap();
         assert!(req.is_url());
-        assert_eq!(
-            req.url.unwrap(),
-            "https://example.com/mypackage-1.0.tar.gz"
-        );
+        assert_eq!(req.url.unwrap(), "https://example.com/mypackage-1.0.tar.gz");
         assert!(req.constraints.is_empty());
     }
 

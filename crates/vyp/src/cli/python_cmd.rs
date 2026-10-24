@@ -23,9 +23,7 @@ pub enum PythonCommand {
         request: Option<String>,
     },
     /// Remove managed installs matching a version.
-    Uninstall {
-        version: String,
-    },
+    Uninstall { version: String },
     /// Print the directory managed Pythons are installed into.
     Dir,
 }
@@ -33,7 +31,10 @@ pub enum PythonCommand {
 pub fn run(args: PythonArgs) -> miette::Result<()> {
     match args.command {
         PythonCommand::Install { version } => {
-            let request = version.as_deref().map(PythonRequest::parse).unwrap_or(PythonRequest::Any);
+            let request = version
+                .as_deref()
+                .map(PythonRequest::parse)
+                .unwrap_or(PythonRequest::Any);
             let candidate = download::find_candidate(&request, None)?;
             let interp = download::install_candidate(&candidate)?;
             println!("{}", interp.describe());
@@ -50,7 +51,10 @@ pub fn run(args: PythonArgs) -> miette::Result<()> {
             }
         }
         PythonCommand::Find { request } => {
-            let request = request.as_deref().map(PythonRequest::parse).unwrap_or(PythonRequest::Any);
+            let request = request
+                .as_deref()
+                .map(PythonRequest::parse)
+                .unwrap_or(PythonRequest::Any);
             let interp = python::find(&request, None).ok_or_else(|| {
                 miette::miette!("No Python matching {}", python::describe_request(&request))
             })?;

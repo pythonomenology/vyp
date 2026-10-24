@@ -259,7 +259,10 @@ impl FromStr for VypVersion {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
         // PEP 440 normalization: strip leading 'v' or 'V'
-        let s = s.strip_prefix('v').or_else(|| s.strip_prefix('V')).unwrap_or(s);
+        let s = s
+            .strip_prefix('v')
+            .or_else(|| s.strip_prefix('V'))
+            .unwrap_or(s);
 
         let (epoch, rest) = if let Some(idx) = s.find('!') {
             let e = s[..idx]
@@ -273,10 +276,8 @@ impl FromStr for VypVersion {
         // Split off local version at '+'
         let (version_part, local) = if let Some(idx) = rest.find('+') {
             let local_str = &rest[idx + 1..];
-            let local_segments: Vec<String> = local_str
-                .split('.')
-                .map(|seg| seg.to_lowercase())
-                .collect();
+            let local_segments: Vec<String> =
+                local_str.split('.').map(|seg| seg.to_lowercase()).collect();
             (&rest[..idx], local_segments)
         } else {
             (rest, Vec::new())
@@ -289,16 +290,12 @@ impl FromStr for VypVersion {
 
         // Parse .devN (also handle "devN" without dot for normalization)
         if let Some(idx) = release_str.to_lowercase().find(".dev") {
-            let dev_num = release_str[idx + 4..]
-                .parse::<u32>()
-                .unwrap_or(0);
+            let dev_num = release_str[idx + 4..].parse::<u32>().unwrap_or(0);
             dev = Some(dev_num);
             release_str = &release_str[..idx];
         } else if let Some(idx) = release_str.to_lowercase().find("dev") {
             if (idx > 0 && release_str.as_bytes()[idx - 1] == b'.') || idx == 0 {
-                let dev_num = release_str[idx + 3..]
-                    .parse::<u32>()
-                    .unwrap_or(0);
+                let dev_num = release_str[idx + 3..].parse::<u32>().unwrap_or(0);
                 dev = Some(dev_num);
                 release_str = release_str[..idx].trim_end_matches('.');
             }
@@ -307,16 +304,12 @@ impl FromStr for VypVersion {
         // Parse .postN (also handle "postN", "-N" post-release notation)
         if let Some(idx) = release_str.to_lowercase().find(".post") {
             let end = release_str.len();
-            let post_num = release_str[idx + 5..end]
-                .parse::<u32>()
-                .unwrap_or(0);
+            let post_num = release_str[idx + 5..end].parse::<u32>().unwrap_or(0);
             post = Some(post_num);
             release_str = &release_str[..idx];
         } else if let Some(idx) = release_str.to_lowercase().find("post") {
             if idx > 0 {
-                let post_num = release_str[idx + 4..]
-                    .parse::<u32>()
-                    .unwrap_or(0);
+                let post_num = release_str[idx + 4..].parse::<u32>().unwrap_or(0);
                 post = Some(post_num);
                 release_str = release_str[..idx].trim_end_matches('.');
             }
@@ -348,10 +341,7 @@ impl FromStr for VypVersion {
                         } else {
                             idx
                         };
-                        pre = Some(PreRelease {
-                            kind,
-                            number: num,
-                        });
+                        pre = Some(PreRelease { kind, number: num });
                         release_str = &release_str[..pre_start];
                         found = true;
                         break;

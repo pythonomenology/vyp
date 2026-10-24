@@ -56,7 +56,9 @@ pub fn parse_blocks(source: &str) -> miette::Result<Vec<(String, String)>> {
     let mut blocks: Vec<(String, String)> = Vec::new();
     let mut lines = source.lines();
     while let Some(line) = lines.next() {
-        let Some(kind) = line.strip_prefix("# /// ") else { continue };
+        let Some(kind) = line.strip_prefix("# /// ") else {
+            continue;
+        };
         let kind = kind.trim_end();
         if kind.is_empty() || !kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             continue;
@@ -73,7 +75,11 @@ pub fn parse_blocks(source: &str) -> miette::Result<Vec<(String, String)>> {
             } else if let Some(t) = inner.strip_prefix("# ") {
                 t
             } else {
-                return Err(miette::miette!("Malformed `# /// {}` block: line {:?} isn't a comment", kind, inner));
+                return Err(miette::miette!(
+                    "Malformed `# /// {}` block: line {:?} isn't a comment",
+                    kind,
+                    inner
+                ));
             };
             content.push_str(text);
             content.push('\n');
@@ -97,7 +103,11 @@ pub fn read_metadata(script: &Path) -> miette::Result<ScriptMetadata> {
         match kind.as_str() {
             "script" => {
                 meta.script = Some(toml::from_str(&content).map_err(|e| {
-                    miette::miette!("Invalid `# /// script` metadata in {}: {}", script.display(), e)
+                    miette::miette!(
+                        "Invalid `# /// script` metadata in {}: {}",
+                        script.display(),
+                        e
+                    )
                 })?)
             }
             "pylock" => meta.pylock = Some(content),
@@ -109,7 +119,11 @@ pub fn read_metadata(script: &Path) -> miette::Result<ScriptMetadata> {
 
 /// A `VypConfig` for a script's metadata: its dependencies and
 /// `requires-python` as a project, and its `[tool.vyp]` table as settings.
-pub fn script_config(script: &Path, block: &toml::Table, with: &[String]) -> miette::Result<VypConfig> {
+pub fn script_config(
+    script: &Path,
+    block: &toml::Table,
+    with: &[String],
+) -> miette::Result<VypConfig> {
     let mut project = toml::Table::new();
     project.insert("name".into(), "script".into());
     project.insert("version".into(), "0".into());
@@ -130,7 +144,10 @@ pub fn script_config(script: &Path, block: &toml::Table, with: &[String]) -> mie
     }
     let text = toml::to_string(&doc).map_err(|e| miette::miette!("{}", e))?;
     let mut config = VypConfig::from_str(&text)?;
-    config.project_dir = script.parent().map(Path::to_path_buf).filter(|p| !p.as_os_str().is_empty());
+    config.project_dir = script
+        .parent()
+        .map(Path::to_path_buf)
+        .filter(|p| !p.as_os_str().is_empty());
     Ok(config)
 }
 
@@ -139,13 +156,25 @@ pub fn run(args: RunArgs) -> miette::Result<()> {
     let is_script = target.extension().is_some_and(|e| e == "py" || e == "pyw") && target.is_file();
     if is_script {
         let python = script_environment(&target, &args)?;
-        exec(&python, std::iter::once(target.as_os_str().to_owned()).chain(args.args.iter().map(Into::into)), None)
+        exec(
+            &python,
+            std::iter::once(target.as_os_str().to_owned()).chain(args.args.iter().map(Into::into)),
+            None,
+        )
     } else {
         // A command in the project environment.
-        let config = if args.project.exists() { VypConfig::from_file(&args.project)? } else { VypConfig::default() };
+        let config = if args.project.exists() {
+            VypConfig::from_file(&args.project)?
+        } else {
+            VypConfig::default()
+        };
         let layout = super::common::target_venv(&config, None)?;
         let program = layout.scripts.join(&args.target);
-        let program = if program.exists() { program } else { PathBuf::from(&args.target) };
+        let program = if program.exists() {
+            program
+        } else {
+            PathBuf::from(&args.target)
+        };
         exec(&program, args.args.iter().map(Into::into), Some(&layout))
     }
 }
@@ -154,9 +183,17 @@ pub fn run(args: RunArgs) -> miette::Result<()> {
 /// needed. Environments are cached by the script's metadata.
 fn script_environment(script: &Path, args: &RunArgs) -> miette::Result<PathBuf> {
     let meta = read_metadata(script)?;
-    let Some(block) = meta.script.clone().or_else(|| (!args.with.is_empty()).then(toml::Table::new)) else {
+    let Some(block) = meta
+        .script
+        .clone()
+        .or_else(|| (!args.with.is_empty()).then(toml::Table::new))
+    else {
         // No metadata: just run it with an interpreter.
-        let request = args.python.as_deref().map(PythonRequest::parse).unwrap_or(PythonRequest::Any);
+        let request = args
+            .python
+            .as_deref()
+            .map(PythonRequest::parse)
+            .unwrap_or(PythonRequest::Any);
         return Ok(python::find_or_install(&request, None, true)?.executable);
     };
     let config = script_config(script, &block, &args.with)?;
@@ -187,10 +224,22 @@ fn script_environment(script: &Path, args: &RunArgs) -> miette::Result<PathBuf> 
         }
     }
 
-    let layout = env::create(&dir, &interp, &VenvOptions { clear: true, ..Default::default() })?;
+    let layout = env::create(
+        &dir,
+        &interp,
+        &VenvOptions {
+            clear: true,
+            ..Default::default()
+        },
+    )?;
     let lock = match &meta.pylock {
-        Some(text) if args.with.is_empty() => toml::from_str::<LockFile>(text)
-            .map_err(|e| miette::miette!("Invalid `# /// pylock` block in {}: {}", script.display(), e))?,
+        Some(text) if args.with.is_empty() => toml::from_str::<LockFile>(text).map_err(|e| {
+            miette::miette!(
+                "Invalid `# /// pylock` block in {}: {}",
+                script.display(),
+                e
+            )
+        })?,
         _ => {
             let mut config = config.clone();
             config.target_python = Some(layout.python_exe.clone());
@@ -203,13 +252,17 @@ fn script_environment(script: &Path, args: &RunArgs) -> miette::Result<PathBuf> 
             }
         }
     };
-    install_lockfile(&lock, &layout, &InstallOptions {
-        default_index: Some(config.index_url.clone()),
-        startup: config.startup_files.clone(),
-        quiet: true,
-        lock_dir: config.project_dir.clone(),
-        ..Default::default()
-    })?;
+    install_lockfile(
+        &lock,
+        &layout,
+        &InstallOptions {
+            default_index: Some(config.index_url.clone()),
+            startup: config.startup_files.clone(),
+            quiet: true,
+            lock_dir: config.project_dir.clone(),
+            ..Default::default()
+        },
+    )?;
     crate::env::provenance::record_install(&layout, &lock)?;
     std::fs::write(&done, b"").map_err(|e| miette::miette!("{}", e))?;
     Ok(layout.python_exe)
@@ -228,7 +281,10 @@ fn exec(
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mut parts = vec![layout.scripts.clone()];
         parts.extend(std::env::split_paths(&path));
-        cmd.env("PATH", std::env::join_paths(parts).map_err(|e| miette::miette!("{}", e))?);
+        cmd.env(
+            "PATH",
+            std::env::join_paths(parts).map_err(|e| miette::miette!("{}", e))?,
+        );
         cmd.env("VIRTUAL_ENV", &layout.root);
         cmd.env_remove("PYTHONHOME");
     }
@@ -236,11 +292,17 @@ fn exec(
     {
         use std::os::unix::process::CommandExt;
         let err = cmd.exec();
-        Err(miette::miette!("Failed to run {}: {}", program.display(), err))
+        Err(miette::miette!(
+            "Failed to run {}: {}",
+            program.display(),
+            err
+        ))
     }
     #[cfg(not(unix))]
     {
-        let status = cmd.status().map_err(|e| miette::miette!("Failed to run {}: {}", program.display(), e))?;
+        let status = cmd
+            .status()
+            .map_err(|e| miette::miette!("Failed to run {}: {}", program.display(), e))?;
         std::process::exit(status.code().unwrap_or(1));
     }
 }
@@ -286,7 +348,8 @@ pub fn write_script_lock(script: &Path, lock: &LockFile) -> miette::Result<()> {
         }
         out.push_str(&block);
     }
-    std::fs::write(script, out).map_err(|e| miette::miette!("Cannot write {}: {}", script.display(), e))
+    std::fs::write(script, out)
+        .map_err(|e| miette::miette!("Cannot write {}: {}", script.display(), e))
 }
 
 #[cfg(test)]
@@ -307,8 +370,14 @@ mod tests {
     #[test]
     fn rejects_malformed_blocks() {
         assert!(parse_blocks("# /// script\n# x = 1\n").is_err(), "unclosed");
-        assert!(parse_blocks("# /// script\nx = 1\n# ///\n").is_err(), "non-comment line");
-        assert!(parse_blocks("# /// script\n# ///\n# /// script\n# ///\n").is_err(), "duplicate");
+        assert!(
+            parse_blocks("# /// script\nx = 1\n# ///\n").is_err(),
+            "non-comment line"
+        );
+        assert!(
+            parse_blocks("# /// script\n# ///\n# /// script\n# ///\n").is_err(),
+            "duplicate"
+        );
         assert!(parse_blocks("# ///script\nprint()\n").unwrap().is_empty());
     }
 

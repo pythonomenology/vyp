@@ -48,12 +48,18 @@ pub struct VenvArgs {
 }
 
 pub fn run(args: VenvArgs) -> miette::Result<()> {
-    let config = if args.project.exists() { Some(VypConfig::from_file(&args.project)?) } else { None };
+    let config = if args.project.exists() {
+        Some(VypConfig::from_file(&args.project)?)
+    } else {
+        None
+    };
     let project_dir = config.as_ref().and_then(|c| c.project_dir.clone());
-    let path = args
-        .path
-        .clone()
-        .unwrap_or_else(|| project_dir.clone().unwrap_or_else(|| PathBuf::from(".")).join(".venv"));
+    let path = args.path.clone().unwrap_or_else(|| {
+        project_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".venv")
+    });
 
     if args.check {
         let layout = VenvLayout::from_root(&std::fs::canonicalize(&path).unwrap_or(path.clone()))?;
@@ -76,7 +82,11 @@ pub fn run(args: VenvArgs) -> miette::Result<()> {
         .or(config.as_ref().and_then(|c| c.python.as_deref()))
         .map(PythonRequest::parse)
         .unwrap_or(PythonRequest::Any);
-    let interp = python::find_or_install(&request, requires_python.as_deref(), !args.no_python_downloads)?;
+    let interp = python::find_or_install(
+        &request,
+        requires_python.as_deref(),
+        !args.no_python_downloads,
+    )?;
 
     let layout = env::create(
         &path,
@@ -94,6 +104,9 @@ pub fn run(args: VenvArgs) -> miette::Result<()> {
         layout.root.display(),
         interp.describe()
     );
-    println!("Activate with: source {}/activate", layout.scripts.display());
+    println!(
+        "Activate with: source {}/activate",
+        layout.scripts.display()
+    );
     Ok(())
 }

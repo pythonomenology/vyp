@@ -58,7 +58,13 @@ pub fn run(args: OverrideArgs) -> miette::Result<()> {
             transitive,
             reason,
             project,
-        } => run_add(&project, &package, &constraint, transitive, reason.as_deref()),
+        } => run_add(
+            &project,
+            &package,
+            &constraint,
+            transitive,
+            reason.as_deref(),
+        ),
         OverrideCommands::Remove { package, project } => run_remove(&project, &package),
         OverrideCommands::List { project } => run_list(&project),
         OverrideCommands::Export { project, output } => run_export(&project, &output),
@@ -177,7 +183,10 @@ fn run_list(project: &Path) -> miette::Result<()> {
 
     println!("Dependency overrides:");
     for dep_override in &config.overrides {
-        print!("  {} = \"{}\"", dep_override.package, dep_override.constraint);
+        print!(
+            "  {} = \"{}\"",
+            dep_override.package, dep_override.constraint
+        );
         if dep_override.transitive {
             print!(" [transitive]");
         }

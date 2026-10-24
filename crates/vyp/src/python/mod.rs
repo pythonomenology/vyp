@@ -50,7 +50,12 @@ impl Interpreter {
         let mut parts = self.version.split('.');
         let major = parts.next().unwrap_or("3");
         let minor = parts.next().unwrap_or("0");
-        format!("{}.{}{}", major, minor, if self.free_threaded { "t" } else { "" })
+        format!(
+            "{}.{}{}",
+            major,
+            minor,
+            if self.free_threaded { "t" } else { "" }
+        )
     }
 
     pub fn describe(&self) -> String {
@@ -58,7 +63,11 @@ impl Interpreter {
             "{} {}{} at {}",
             self.implementation,
             self.version,
-            if self.free_threaded { " (free-threaded)" } else { "" },
+            if self.free_threaded {
+                " (free-threaded)"
+            } else {
+                ""
+            },
             self.executable.display()
         )
     }
@@ -70,7 +79,10 @@ pub enum PythonRequest {
     /// Any interpreter (still subject to `requires-python`).
     Any,
     /// `3`, `3.12`, `3.12.7`, optionally with a `t` suffix for free-threaded.
-    Version { version: String, free_threaded: bool },
+    Version {
+        version: String,
+        free_threaded: bool,
+    },
     /// A PEP 440 specifier such as `>=3.10,<3.13`.
     Specifier(String),
     /// A path to an interpreter, or a command name on `PATH`.
@@ -92,8 +104,15 @@ impl PythonRequest {
             Some(d) => (d, true),
             None => (bare, false),
         };
-        if !digits.is_empty() && digits.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) {
-            return Self::Version { version: digits.to_string(), free_threaded };
+        if !digits.is_empty()
+            && digits
+                .split('.')
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        {
+            return Self::Version {
+                version: digits.to_string(),
+                free_threaded,
+            };
         }
         if s.starts_with(['<', '>', '=', '!', '~']) {
             return Self::Specifier(s.to_string());
@@ -105,7 +124,10 @@ impl PythonRequest {
     pub fn matches(&self, interp: &Interpreter) -> bool {
         match self {
             Self::Any | Self::Path(_) => true,
-            Self::Version { version, free_threaded } => {
+            Self::Version {
+                version,
+                free_threaded,
+            } => {
                 if *free_threaded != interp.free_threaded {
                     return false;
                 }
@@ -120,7 +142,9 @@ impl PythonRequest {
 
 /// Whether `version` satisfies a `Requires-Python`-style specifier.
 pub fn version_satisfies(version: &str, spec: &str) -> bool {
-    let Ok(v) = version.parse::<VypVersion>() else { return false };
+    let Ok(v) = version.parse::<VypVersion>() else {
+        return false;
+    };
     match format!("python {}", spec).parse::<Requirement>() {
         Ok(req) => requirements_to_range(&req.constraints).contains(&v),
         Err(_) => false,
@@ -143,13 +167,19 @@ pub fn find(request: &PythonRequest, requires_python: Option<&str>) -> Option<In
         }?;
         let interp = probe(&resolved)?;
         // A venv interpreter given explicitly stands for its base.
-        let interp = if interp.is_venv { probe(&interp.base_executable)? } else { interp };
+        let interp = if interp.is_venv {
+            probe(&interp.base_executable)?
+        } else {
+            interp
+        };
         return accept(&interp).then_some(interp);
     }
 
     let mut seen = HashSet::new();
     for candidate in candidates() {
-        let Some(interp) = probe(&candidate) else { continue };
+        let Some(interp) = probe(&candidate) else {
+            continue;
+        };
         let interp = if interp.is_venv {
             match probe(&interp.base_executable) {
                 Some(base) => base,
@@ -173,7 +203,9 @@ pub fn find_all() -> Vec<Interpreter> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for candidate in candidates() {
-        let Some(interp) = probe(&candidate) else { continue };
+        let Some(interp) = probe(&candidate) else {
+            continue;
+        };
         if interp.is_venv {
             continue;
         }
@@ -195,13 +227,18 @@ pub fn find_or_install(
         return Ok(found);
     }
     if matches!(request, PythonRequest::Path(_)) {
-        return Err(miette::miette!("No usable Python interpreter at {:?}", request));
+        return Err(miette::miette!(
+            "No usable Python interpreter at {:?}",
+            request
+        ));
     }
     if !allow_download || downloads_disabled() {
         return Err(miette::miette!(
             "No Python interpreter found matching {}{}. Install one with `vyp python install`.",
             describe_request(request),
-            requires_python.map(|r| format!(" and requires-python {}", r)).unwrap_or_default()
+            requires_python
+                .map(|r| format!(" and requires-python {}", r))
+                .unwrap_or_default()
         ));
     }
     eprintln!(
@@ -214,7 +251,10 @@ pub fn find_or_install(
 pub fn describe_request(request: &PythonRequest) -> String {
     match request {
         PythonRequest::Any => "any version".to_string(),
-        PythonRequest::Version { version, free_threaded } => {
+        PythonRequest::Version {
+            version,
+            free_threaded,
+        } => {
             format!("{}{}", version, if *free_threaded { "t" } else { "" })
         }
         PythonRequest::Specifier(s) => s.clone(),
@@ -231,16 +271,20 @@ pub fn managed_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("VYP_PYTHON_INSTALL_DIR") {
         return PathBuf::from(dir);
     }
-    let data = std::env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        PathBuf::from(home).join(".local").join("share")
-    });
+    let data = std::env::var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            PathBuf::from(home).join(".local").join("share")
+        });
     data.join("vyp").join("python")
 }
 
 /// Managed installs, newest version first.
 pub fn managed_installs() -> Vec<(PathBuf, PathBuf)> {
-    let Ok(entries) = std::fs::read_dir(managed_dir()) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(managed_dir()) else {
+        return Vec::new();
+    };
     let mut installs: Vec<(VypVersion, PathBuf, PathBuf)> = entries
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with("cpython-"))
@@ -248,12 +292,20 @@ pub fn managed_installs() -> Vec<(PathBuf, PathBuf)> {
             let dir = e.path();
             let exe = managed_executable(&dir)?;
             let name = e.file_name().to_string_lossy().to_string();
-            let version = name.strip_prefix("cpython-")?.split('-').next()?.parse().ok()?;
+            let version = name
+                .strip_prefix("cpython-")?
+                .split('-')
+                .next()?
+                .parse()
+                .ok()?;
             Some((version, dir, exe))
         })
         .collect();
     installs.sort_by(|a, b| b.0.cmp(&a.0));
-    installs.into_iter().map(|(_, dir, exe)| (dir, exe)).collect()
+    installs
+        .into_iter()
+        .map(|(_, dir, exe)| (dir, exe))
+        .collect()
 }
 
 fn managed_executable(install_dir: &Path) -> Option<PathBuf> {
@@ -271,7 +323,9 @@ fn candidates() -> Vec<PathBuf> {
 
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
-            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
             let mut names: Vec<String> = entries
                 .flatten()
                 .map(|e| e.file_name().to_string_lossy().to_string())
@@ -283,21 +337,29 @@ fn candidates() -> Vec<PathBuf> {
         }
     }
 
-    let pyenv_root = std::env::var("PYENV_ROOT").map(PathBuf::from).unwrap_or_else(|_| {
-        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".pyenv")
-    });
+    let pyenv_root = std::env::var("PYENV_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".pyenv")
+        });
     if let Ok(entries) = std::fs::read_dir(pyenv_root.join("versions")) {
         let mut dirs: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
         dirs.sort();
         dirs.reverse();
-        out.extend(dirs.into_iter().map(|d| d.join("bin").join("python3")).filter(|p| p.exists()));
+        out.extend(
+            dirs.into_iter()
+                .map(|d| d.join("bin").join("python3"))
+                .filter(|p| p.exists()),
+        );
     }
     out
 }
 
 fn is_python_name(name: &str) -> bool {
     let stem = name.strip_suffix(".exe").unwrap_or(name);
-    let Some(rest) = stem.strip_prefix("python") else { return false };
+    let Some(rest) = stem.strip_prefix("python") else {
+        return false;
+    };
     let rest = rest.strip_suffix('t').unwrap_or(rest);
     rest.is_empty()
         || rest == "3"
@@ -314,7 +376,16 @@ fn python_name_rank(name: &str) -> (u32, u32) {
         .nth(1)
         .and_then(|m| m.trim_end_matches('t').parse().ok())
         .unwrap_or(0);
-    (if has_minor { 2 } else if rest == "3" { 1 } else { 0 }, minor)
+    (
+        if has_minor {
+            2
+        } else if rest == "3" {
+            1
+        } else {
+            0
+        },
+        minor,
+    )
 }
 
 pub fn which(name: &str) -> Option<PathBuf> {
@@ -367,9 +438,10 @@ pub fn probe(path: &Path) -> Option<Interpreter> {
     // pyenv shims are scripts whose target changes with `pyenv global` and
     // `.python-version` without the shim changing, so never cache them.
     let cacheable = !path.to_string_lossy().contains("/shims/");
-    let cache_file = cache_base_dir()
-        .join("interpreters")
-        .join(format!("{}.json", hex_sha256(path.to_string_lossy().as_bytes())));
+    let cache_file = cache_base_dir().join("interpreters").join(format!(
+        "{}.json",
+        hex_sha256(path.to_string_lossy().as_bytes())
+    ));
     if cacheable {
         if let Some(cached) = std::fs::read_to_string(&cache_file)
             .ok()
@@ -400,7 +472,11 @@ pub fn probe(path: &Path) -> Option<Interpreter> {
         }
         let _ = std::fs::write(
             &cache_file,
-            serde_json::to_string(&CachedProbe { mtime, interpreter: interpreter.clone() }).unwrap_or_default(),
+            serde_json::to_string(&CachedProbe {
+                mtime,
+                interpreter: interpreter.clone(),
+            })
+            .unwrap_or_default(),
         );
     }
     Some(interpreter)
@@ -408,7 +484,10 @@ pub fn probe(path: &Path) -> Option<Interpreter> {
 
 pub fn hex_sha256(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    Sha256::digest(bytes).iter().map(|b| format!("{:02x}", b)).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
 }
 
 #[cfg(test)]
@@ -437,14 +516,26 @@ mod tests {
         assert_eq!(PythonRequest::parse(""), PythonRequest::Any);
         assert_eq!(
             PythonRequest::parse("3.12"),
-            PythonRequest::Version { version: "3.12".into(), free_threaded: false }
+            PythonRequest::Version {
+                version: "3.12".into(),
+                free_threaded: false
+            }
         );
         assert_eq!(
             PythonRequest::parse("python3.13t"),
-            PythonRequest::Version { version: "3.13".into(), free_threaded: true }
+            PythonRequest::Version {
+                version: "3.13".into(),
+                free_threaded: true
+            }
         );
-        assert_eq!(PythonRequest::parse(">=3.10"), PythonRequest::Specifier(">=3.10".into()));
-        assert_eq!(PythonRequest::parse("/usr/bin/python3"), PythonRequest::Path("/usr/bin/python3".into()));
+        assert_eq!(
+            PythonRequest::parse(">=3.10"),
+            PythonRequest::Specifier(">=3.10".into())
+        );
+        assert_eq!(
+            PythonRequest::parse("/usr/bin/python3"),
+            PythonRequest::Path("/usr/bin/python3".into())
+        );
     }
 
     #[test]
@@ -460,10 +551,21 @@ mod tests {
 
     #[test]
     fn recognizes_python_executable_names() {
-        for ok in ["python", "python3", "python3.12", "python3.13t", "python3.exe"] {
+        for ok in [
+            "python",
+            "python3",
+            "python3.12",
+            "python3.13t",
+            "python3.exe",
+        ] {
             assert!(is_python_name(ok), "{}", ok);
         }
-        for bad in ["python3-config", "python3.12-config", "pythonw", "python3.x"] {
+        for bad in [
+            "python3-config",
+            "python3.12-config",
+            "pythonw",
+            "python3.x",
+        ] {
             assert!(!is_python_name(bad), "{}", bad);
         }
     }
@@ -474,6 +576,10 @@ mod tests {
         let interp = probe(&path).expect("probe python3");
         assert!(interp.version.starts_with('3'));
         assert!(interp.executable.is_absolute());
-        assert!(interp.purelib.ends_with("site-packages"), "{}", interp.purelib);
+        assert!(
+            interp.purelib.ends_with("site-packages"),
+            "{}",
+            interp.purelib
+        );
     }
 }

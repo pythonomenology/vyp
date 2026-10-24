@@ -25,17 +25,17 @@ pub fn requirements_to_range(
         let constraint_range = match c.op {
             ComparisonOp::Gte => Ranges::higher_than(c.version.clone()),
             ComparisonOp::Gt => {
-                if c.version.post.is_none() && c.version.dev.is_none() && c.version.local.is_empty() {
+                if c.version.post.is_none() && c.version.dev.is_none() && c.version.local.is_empty()
+                {
                     Ranges::strictly_higher_than(c.version.clone().with_post_max())
                 } else {
                     Ranges::strictly_higher_than(c.version.clone())
                 }
             }
-            ComparisonOp::Lte => {
-                Ranges::lower_than(c.version.clone().with_local_max())
-            }
+            ComparisonOp::Lte => Ranges::lower_than(c.version.clone().with_local_max()),
             ComparisonOp::Lt => {
-                if c.version.pre.is_none() && c.version.dev.is_none() && c.version.local.is_empty() {
+                if c.version.pre.is_none() && c.version.dev.is_none() && c.version.local.is_empty()
+                {
                     Ranges::strictly_lower_than(c.version.clone().with_dev(0))
                 } else {
                     Ranges::strictly_lower_than(c.version.clone())

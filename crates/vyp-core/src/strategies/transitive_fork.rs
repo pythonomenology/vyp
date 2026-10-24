@@ -21,12 +21,7 @@ impl ConflictStrategy for TransitiveForkStrategy {
         let relevant_conflicts: Vec<_> = context
             .inherited_conflicts
             .iter()
-            .filter(|c| {
-                c.transitive
-                    && c.on
-                        .iter()
-                        .any(|p| p == context.contested_package.name())
-            })
+            .filter(|c| c.transitive && c.on.iter().any(|p| p == context.contested_package.name()))
             .collect();
 
         if relevant_conflicts.is_empty() {

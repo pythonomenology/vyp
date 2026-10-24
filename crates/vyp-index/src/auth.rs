@@ -37,7 +37,9 @@ fn netrc_path() -> Option<std::path::PathBuf> {
 fn load_netrc() -> NetrcMap {
     let mut map = NetrcMap::new();
     let Some(path) = netrc_path() else { return map };
-    let Ok(content) = std::fs::read_to_string(&path) else { return map };
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return map;
+    };
     parse_netrc(&content, &mut map);
     map
 }
@@ -140,12 +142,18 @@ mod tests {
     fn default_entry() {
         let mut map = NetrcMap::new();
         parse_netrc("default login u password p", &mut map);
-        assert_eq!(map.get("default"), Some(&("u".to_string(), "p".to_string())));
+        assert_eq!(
+            map.get("default"),
+            Some(&("u".to_string(), "p".to_string()))
+        );
     }
 
     #[test]
     fn host_extraction() {
-        assert_eq!(host_of("https://pypi.org/simple"), Some("pypi.org".to_string()));
+        assert_eq!(
+            host_of("https://pypi.org/simple"),
+            Some("pypi.org".to_string())
+        );
         assert_eq!(
             host_of("https://user:pw@nexus.corp:8443/repo"),
             Some("nexus.corp".to_string())

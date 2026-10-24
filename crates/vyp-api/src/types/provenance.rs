@@ -67,16 +67,8 @@ impl ResolutionProvenance {
         }
     }
 
-    pub fn record_rejection(
-        &mut self,
-        package: &str,
-        version: &str,
-        reason: &str,
-    ) {
-        let record = self
-            .records
-            .entry(package.to_string())
-            .or_default();
+    pub fn record_rejection(&mut self, package: &str, version: &str, reason: &str) {
+        let record = self.records.entry(package.to_string()).or_default();
         record.alternatives_rejected.push(RejectedAlternative {
             version: version.to_string(),
             reason: reason.to_string(),

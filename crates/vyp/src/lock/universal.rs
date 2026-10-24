@@ -4,8 +4,11 @@
 use std::collections::HashSet;
 use vyp_core::{ResolutionResult, WheelUrlInfo};
 
+use super::lockfile::{
+    directory_ref, package_tool, vcs_ref, PyLockDirectory, PyLockPackageTool, PyLockSdist,
+    PyLockVcs, PyLockWheel,
+};
 use crate::config::settings::ForkStrategy;
-use super::lockfile::{directory_ref, package_tool, vcs_ref, PyLockDirectory, PyLockPackageTool, PyLockSdist, PyLockVcs, PyLockWheel};
 
 /// One package entry in a universal (multi-environment) lockfile.
 #[derive(Debug, Clone)]
@@ -25,7 +28,9 @@ pub struct UniversalPackageEntry {
 pub fn parse_python_version_from_marker(marker: &str) -> Option<String> {
     let marker = marker.trim();
     // python_version == "3.8" or python_version=="3.8"
-    let rest = marker.strip_prefix("python_version")?.trim_start_matches([' ', '=']);
+    let rest = marker
+        .strip_prefix("python_version")?
+        .trim_start_matches([' ', '=']);
     let rest = rest.trim();
     let quoted = rest.strip_prefix('"')?.strip_suffix('"')?;
     if quoted.contains('"') {
@@ -71,12 +76,15 @@ fn merge_requires_python(
                 marker: Some(marker.clone()),
                 tool,
                 wheels,
-                sdist: result.sdist_urls.get(name.as_str()).map(|info| PyLockSdist {
-                    name: info.filename.clone(),
-                    url: Some(info.url.clone()),
-                    size: None,
-                    hashes: (!info.hashes.is_empty()).then(|| info.hashes.clone()),
-                }),
+                sdist: result
+                    .sdist_urls
+                    .get(name.as_str())
+                    .map(|info| PyLockSdist {
+                        name: info.filename.clone(),
+                        url: Some(info.url.clone()),
+                        size: None,
+                        hashes: (!info.hashes.is_empty()).then(|| info.hashes.clone()),
+                    }),
                 directory: directory_ref(&result, name),
                 vcs: vcs_ref(&result, name),
             });
@@ -103,9 +111,9 @@ fn merge_fewest(env_results: Vec<(String, ResolutionResult)>) -> Vec<UniversalPa
     for (marker, result) in &env_results {
         for (name, version) in &result.packages {
             let version_str = version.to_string();
-            let same_version_everywhere = env_results
-                .iter()
-                .all(|(_, r)| r.packages.get(name).map(|v| v.to_string()) == Some(version_str.clone()));
+            let same_version_everywhere = env_results.iter().all(|(_, r)| {
+                r.packages.get(name).map(|v| v.to_string()) == Some(version_str.clone())
+            });
             let marker_for_entry = if same_version_everywhere {
                 None
             } else {
@@ -123,12 +131,15 @@ fn merge_fewest(env_results: Vec<(String, ResolutionResult)>) -> Vec<UniversalPa
                 marker: marker_for_entry,
                 tool,
                 wheels,
-                sdist: result.sdist_urls.get(name.as_str()).map(|info| PyLockSdist {
-                    name: info.filename.clone(),
-                    url: Some(info.url.clone()),
-                    size: None,
-                    hashes: (!info.hashes.is_empty()).then(|| info.hashes.clone()),
-                }),
+                sdist: result
+                    .sdist_urls
+                    .get(name.as_str())
+                    .map(|info| PyLockSdist {
+                        name: info.filename.clone(),
+                        url: Some(info.url.clone()),
+                        size: None,
+                        hashes: (!info.hashes.is_empty()).then(|| info.hashes.clone()),
+                    }),
                 directory: directory_ref(result, name),
                 vcs: vcs_ref(result, name),
             });

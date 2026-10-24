@@ -27,7 +27,11 @@ impl WheelCache {
             .and_then(|s| s.parse::<u64>().ok())
             .map(|gb| gb * 1024 * 1024 * 1024)
             .unwrap_or(DEFAULT_MAX_ARCHIVE_BYTES);
-        Self { base_dir: base, archive_dir, max_archive_bytes }
+        Self {
+            base_dir: base,
+            archive_dir,
+            max_archive_bytes,
+        }
     }
 
     pub fn tmp_dir(&self) -> PathBuf {
@@ -53,7 +57,11 @@ impl WheelCache {
 
     /// Extract a wheel file from disk into archive cache.
     #[allow(dead_code)]
-    pub fn store_from_file(&self, key: &str, wheel_path: &Path) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn store_from_file(
+        &self,
+        key: &str,
+        wheel_path: &Path,
+    ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
         let (path, _) = self.store_from_file_with_list(key, wheel_path, true)?;
         Ok(path)
     }
@@ -95,7 +103,9 @@ impl WheelCache {
     /// Run LRU eviction if cache size exceeds the limit. Call once after a
     /// batch of installs instead of after each package to avoid O(n²) work.
     pub fn evict_archives_if_needed(&self) {
-        let Ok(entries) = std::fs::read_dir(&self.archive_dir) else { return };
+        let Ok(entries) = std::fs::read_dir(&self.archive_dir) else {
+            return;
+        };
 
         let mut dirs: Vec<(PathBuf, u64, u64)> = Vec::new();
         let mut total_size: u64 = 0;
@@ -109,7 +119,8 @@ impl WheelCache {
                 continue;
             }
             let size = dir_size_fast(&entry.path());
-            let mtime = entry.metadata()
+            let mtime = entry
+                .metadata()
                 .ok()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
@@ -178,7 +189,10 @@ fn dir_size_fast(path: &Path) -> u64 {
         .sum()
 }
 
-fn write_filelist_manifest(archive_path: &Path, file_list: &[PathBuf]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn write_filelist_manifest(
+    archive_path: &Path,
+    file_list: &[PathBuf],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let manifest = archive_path.join(FILELIST_MANIFEST);
     let content: String = file_list
         .iter()

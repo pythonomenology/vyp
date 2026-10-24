@@ -133,9 +133,7 @@ impl IndexRouter {
 
         // Transitive members route here only if not also default-reachable.
         match inner.scopes.get(index) {
-            Some(scope) => {
-                scope.contains(&package) && !inner.default_reachable.contains(&package)
-            }
+            Some(scope) => scope.contains(&package) && !inner.default_reachable.contains(&package),
             None => false,
         }
     }

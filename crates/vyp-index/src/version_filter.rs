@@ -80,7 +80,10 @@ pub struct ExcludeNewer {
 
 impl ExcludeNewer {
     pub fn cutoff_for(&self, normalized: &str) -> Option<i64> {
-        self.packages.get(normalized).copied().unwrap_or(self.default)
+        self.packages
+            .get(normalized)
+            .copied()
+            .unwrap_or(self.default)
     }
 
     pub fn is_set(&self) -> bool {
@@ -128,7 +131,9 @@ pub fn filter_versions_with(
     // Upload-time cutoffs apply even when platform filtering is disabled.
     if options.uploaded_before.is_some() {
         versions.retain(|v| match wheel_info.get(v) {
-            Some(files) if !files.is_empty() => files.iter().any(|f| uploaded_by(f, options.uploaded_before)),
+            Some(files) if !files.is_empty() => files
+                .iter()
+                .any(|f| uploaded_by(f, options.uploaded_before)),
             _ => true,
         });
     }
@@ -139,10 +144,11 @@ pub fn filter_versions_with(
     let mut wheel_ok = Vec::with_capacity(versions.len());
     let mut sdist_ok = Vec::with_capacity(versions.len());
     for v in versions.iter() {
-        let files: Option<Vec<&WheelInfo>> = wheel_info
-            .get(v)
-            .filter(|f| !f.is_empty())
-            .map(|f| f.iter().filter(|w| uploaded_by(w, options.uploaded_before)).collect());
+        let files: Option<Vec<&WheelInfo>> = wheel_info.get(v).filter(|f| !f.is_empty()).map(|f| {
+            f.iter()
+                .filter(|w| uploaded_by(w, options.uploaded_before))
+                .collect()
+        });
         match files {
             // No file information (e.g. an HTML index): can't judge, keep.
             None => {
@@ -179,7 +185,11 @@ pub fn filter_versions_with(
     });
 }
 
-fn rp_matches(spec: Option<&str>, target: &VypVersion, cache: &mut std::collections::HashMap<String, bool>) -> bool {
+fn rp_matches(
+    spec: Option<&str>,
+    target: &VypVersion,
+    cache: &mut std::collections::HashMap<String, bool>,
+) -> bool {
     match spec {
         None => true,
         Some(spec) => *cache
@@ -294,7 +304,11 @@ mod tests {
     #[test]
     fn not_viable_when_all_yanked() {
         let tags = PlatformTags::from_env(&arm64_mac());
-        let ws = vec![wheel("pkg-1.0-cp310-cp310-macosx_11_0_arm64.whl", None, true)];
+        let ws = vec![wheel(
+            "pkg-1.0-cp310-cp310-macosx_11_0_arm64.whl",
+            None,
+            true,
+        )];
         assert!(!version_is_viable(Some(&ws), &tags, &v("3.10.4")));
     }
 
@@ -322,15 +336,27 @@ mod tests {
 
     fn filtered(info: &[(&str, Vec<WheelInfo>)], options: &FilterOptions) -> Vec<String> {
         let tags = PlatformTags::from_env(&arm64_mac());
-        let map: std::collections::HashMap<VypVersion, Vec<WheelInfo>> =
-            info.iter().map(|(ver, files)| (v(ver), files.clone())).collect();
+        let map: std::collections::HashMap<VypVersion, Vec<WheelInfo>> = info
+            .iter()
+            .map(|(ver, files)| (v(ver), files.clone()))
+            .collect();
         let mut versions: Vec<VypVersion> = info.iter().map(|(ver, _)| v(ver)).collect();
-        filter_versions_with(&mut versions, &map, &tags, &v("3.10.4"), &mut Default::default(), options);
+        filter_versions_with(
+            &mut versions,
+            &map,
+            &tags,
+            &v("3.10.4"),
+            &mut Default::default(),
+            options,
+        );
         versions.iter().map(|x| x.to_string()).collect()
     }
 
     fn sdist(name: &str) -> WheelInfo {
-        WheelInfo { has_metadata: false, ..wheel(name, None, false) }
+        WheelInfo {
+            has_metadata: false,
+            ..wheel(name, None, false)
+        }
     }
 
     fn at(mut w: WheelInfo, t: i64) -> WheelInfo {
@@ -341,17 +367,39 @@ mod tests {
     #[test]
     fn sdist_policies() {
         let info = vec![
-            ("1.0", vec![wheel("pkg-1.0-py3-none-any.whl", None, false), sdist("pkg-1.0.tar.gz")]),
+            (
+                "1.0",
+                vec![
+                    wheel("pkg-1.0-py3-none-any.whl", None, false),
+                    sdist("pkg-1.0.tar.gz"),
+                ],
+            ),
             ("2.0", vec![sdist("pkg-2.0.tar.gz")]),
         ];
-        let never = FilterOptions { sdists: SdistPolicy::Never, ..Default::default() };
-        let fallback = FilterOptions { sdists: SdistPolicy::Fallback, ..Default::default() };
-        let allow = FilterOptions { sdists: SdistPolicy::Allow, ..Default::default() };
+        let never = FilterOptions {
+            sdists: SdistPolicy::Never,
+            ..Default::default()
+        };
+        let fallback = FilterOptions {
+            sdists: SdistPolicy::Fallback,
+            ..Default::default()
+        };
+        let allow = FilterOptions {
+            sdists: SdistPolicy::Allow,
+            ..Default::default()
+        };
         assert_eq!(filtered(&info, &never), vec!["1.0"]);
-        assert_eq!(filtered(&info, &fallback), vec!["1.0"], "a wheel version exists, so don't build 2.0");
+        assert_eq!(
+            filtered(&info, &fallback),
+            vec!["1.0"],
+            "a wheel version exists, so don't build 2.0"
+        );
         assert_eq!(filtered(&info, &allow), vec!["1.0", "2.0"]);
 
-        let sdist_only = vec![("1.0", vec![sdist("pkg-1.0.tar.gz")]), ("2.0", vec![sdist("pkg-2.0.tar.gz")])];
+        let sdist_only = vec![
+            ("1.0", vec![sdist("pkg-1.0.tar.gz")]),
+            ("2.0", vec![sdist("pkg-2.0.tar.gz")]),
+        ];
         assert_eq!(filtered(&sdist_only, &fallback), vec!["1.0", "2.0"]);
         assert!(filtered(&sdist_only, &never).is_empty());
     }
@@ -359,14 +407,32 @@ mod tests {
     #[test]
     fn upload_cutoff_drops_newer_files() {
         let info = vec![
-            ("1.0", vec![at(wheel("pkg-1.0-py3-none-any.whl", None, false), 100)]),
-            ("1.1", vec![at(wheel("pkg-1.1-py3-none-any.whl", None, false), 300)]),
+            (
+                "1.0",
+                vec![at(wheel("pkg-1.0-py3-none-any.whl", None, false), 100)],
+            ),
+            (
+                "1.1",
+                vec![at(wheel("pkg-1.1-py3-none-any.whl", None, false), 300)],
+            ),
             // 1.2's wheel arrived late; only its sdist predates the cutoff.
-            ("1.2", vec![at(sdist("pkg-1.2.tar.gz"), 150), at(wheel("pkg-1.2-py3-none-any.whl", None, false), 400)]),
+            (
+                "1.2",
+                vec![
+                    at(sdist("pkg-1.2.tar.gz"), 150),
+                    at(wheel("pkg-1.2-py3-none-any.whl", None, false), 400),
+                ],
+            ),
         ];
-        let opts = FilterOptions { uploaded_before: Some(200), sdists: SdistPolicy::Allow };
+        let opts = FilterOptions {
+            uploaded_before: Some(200),
+            sdists: SdistPolicy::Allow,
+        };
         assert_eq!(filtered(&info, &opts), vec!["1.0", "1.2"]);
-        let opts = FilterOptions { uploaded_before: Some(200), sdists: SdistPolicy::Never };
+        let opts = FilterOptions {
+            uploaded_before: Some(200),
+            sdists: SdistPolicy::Never,
+        };
         assert_eq!(filtered(&info, &opts), vec!["1.0"]);
     }
 }

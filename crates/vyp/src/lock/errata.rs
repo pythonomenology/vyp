@@ -97,7 +97,12 @@ impl LoadedErrata {
 
             for req_str in &raw.add_requires {
                 let req: Requirement = req_str.parse().map_err(|e| {
-                    miette::miette!("Invalid add-requires '{}' in {}: {}", req_str, item.source, e)
+                    miette::miette!(
+                        "Invalid add-requires '{}' in {}: {}",
+                        req_str,
+                        item.source,
+                        e
+                    )
                 })?;
                 if req.marker.as_ref().is_none_or(|m| m.evaluate(env, &[])) {
                     erratum.requires.push(req);
@@ -114,7 +119,13 @@ impl LoadedErrata {
 
 fn parse_spec(package: &str, spec: &str, source: &str) -> miette::Result<vyp_core::resolver::VS> {
     let req: Requirement = format!("{} {}", package, spec).parse().map_err(|e| {
-        miette::miette!("Invalid version specifier '{}' for {} in {}: {}", spec, package, source, e)
+        miette::miette!(
+            "Invalid version specifier '{}' for {} in {}: {}",
+            spec,
+            package,
+            source,
+            e
+        )
     })?;
     Ok(requirements_to_range(&req.constraints))
 }
@@ -141,10 +152,12 @@ pub fn load_feeds(
             source: source.clone(),
             sha256: hex_sha256(content.as_bytes()),
         });
-        loaded.errata.extend(feed.errata.into_iter().map(|raw| FeedErratum {
-            raw,
-            source: source.clone(),
-        }));
+        loaded
+            .errata
+            .extend(feed.errata.into_iter().map(|raw| FeedErratum {
+                raw,
+                source: source.clone(),
+            }));
     }
     Ok(loaded)
 }
@@ -177,11 +190,16 @@ fn is_url(source: &str) -> bool {
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{:02x}", b)).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
 }
 
 fn cache_path(url: &str) -> PathBuf {
-    cache_base_dir().join("errata").join(format!("{}.toml", hex_sha256(url.as_bytes())))
+    cache_base_dir()
+        .join("errata")
+        .join(format!("{}.toml", hex_sha256(url.as_bytes())))
 }
 
 fn fetch_remote(url: &str, client: &reqwest::Client) -> miette::Result<String> {
@@ -215,10 +233,17 @@ fn fetch_remote(url: &str, client: &reqwest::Client) -> miette::Result<String> {
         }
         Err(err) => match std::fs::read_to_string(&cached) {
             Ok(body) => {
-                eprintln!("warning: could not fetch errata feed {} ({}); using cached copy", url, err);
+                eprintln!(
+                    "warning: could not fetch errata feed {} ({}); using cached copy",
+                    url, err
+                );
                 Ok(body)
             }
-            Err(_) => Err(miette::miette!("Failed to fetch errata feed {}: {}", url, err)),
+            Err(_) => Err(miette::miette!(
+                "Failed to fetch errata feed {}: {}",
+                url,
+                err
+            )),
         },
     }
 }
@@ -248,7 +273,10 @@ add-requires = ["bar<2", "winonly; sys_platform == 'win32'"]
             errata: feed
                 .errata
                 .into_iter()
-                .map(|raw| FeedErratum { raw, source: "feed.toml".into() })
+                .map(|raw| FeedErratum {
+                    raw,
+                    source: "feed.toml".into(),
+                })
                 .collect(),
             feeds: Vec::new(),
         }

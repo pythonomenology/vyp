@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tokio::sync::Semaphore;
 use vyp_api::traits::metadata_provider::{MetadataProvider, PackageMetadata, PackageVersions};
-use vyp_api::{IndexScope, MarkerEnvironment, VypPackage, VypVersion, ConflictSet, Requirement};
+use vyp_api::{ConflictSet, IndexScope, MarkerEnvironment, Requirement, VypPackage, VypVersion};
 
 use crate::in_memory_index::{
     InMemoryIndex, MetadataClaim, MetadataResult, VersionsClaim, VersionsResult, WheelInfo,
@@ -112,11 +112,7 @@ impl PyPIMetadataProvider {
         Self::with_name("pypi", index_url, None)
     }
 
-    pub fn with_name(
-        name: &str,
-        index_url: &str,
-        scope: Option<Arc<dyn IndexScope>>,
-    ) -> Self {
+    pub fn with_name(name: &str, index_url: &str, scope: Option<Arc<dyn IndexScope>>) -> Self {
         Self::with_name_and_env(name, index_url, scope, None)
     }
 
@@ -197,15 +193,22 @@ impl PyPIMetadataProvider {
     ) {
         let cutoff = self.exclude_newer.cutoff_for(package);
         if cutoff.is_some()
-            && wheel_info.values().flatten().any(|w| w.upload_time.is_none())
-            && !self.warned_no_upload_time.swap(true, std::sync::atomic::Ordering::Relaxed)
+            && wheel_info
+                .values()
+                .flatten()
+                .any(|w| w.upload_time.is_none())
+            && !self
+                .warned_no_upload_time
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
         {
             eprintln!(
                 "warning: {} doesn't report upload times for every file; exclude-newer can't be applied to those files",
                 self.index_url
             );
         }
-        let Some(target) = &self.target_python else { return };
+        let Some(target) = &self.target_python else {
+            return;
+        };
         let mut cache = self.rp_cache.lock().expect("poisoned");
         crate::version_filter::filter_versions_with(
             versions,
@@ -213,7 +216,10 @@ impl PyPIMetadataProvider {
             &self.platform_tags,
             target,
             &mut cache,
-            &crate::version_filter::FilterOptions { sdists: self.sdists, uploaded_before: cutoff },
+            &crate::version_filter::FilterOptions {
+                sdists: self.sdists,
+                uploaded_before: cutoff,
+            },
         );
     }
 
@@ -312,15 +318,23 @@ impl PyPIMetadataProvider {
             // happens outside it.
             let (versions_file, view_file) = {
                 let cache = disk_cache.lock().expect("poisoned");
-                (cache.versions_file(&pkg), cache.env_versions_file(&pkg, &tags.fingerprint()))
+                (
+                    cache.versions_file(&pkg),
+                    cache.env_versions_file(&pkg, &tags.fingerprint()),
+                )
             };
             if let Some((versions, stored_wheel_info)) =
-                crate::cache::MetadataCache::read_versions_for_env(&versions_file, &view_file, |f| {
-                    f.ends_with(".whl") && tags.is_compatible(f)
-                })
+                crate::cache::MetadataCache::read_versions_for_env(
+                    &versions_file,
+                    &view_file,
+                    |f| f.ends_with(".whl") && tags.is_compatible(f),
+                )
             {
-                if let Ok(mut c) = counters.lock() { c.version_disk_hits += 1; }
-                let wheel_info: HashMap<VypVersion, Vec<WheelInfo>> = stored_wheel_info.into_iter()
+                if let Ok(mut c) = counters.lock() {
+                    c.version_disk_hits += 1;
+                }
+                let wheel_info: HashMap<VypVersion, Vec<WheelInfo>> = stored_wheel_info
+                    .into_iter()
                     .filter_map(|(v_str, wheels)| {
                         v_str.parse::<VypVersion>().ok().map(|v| (v, wheels))
                     })
@@ -328,89 +342,142 @@ impl PyPIMetadataProvider {
                 // Warm the likely picks' metadata now, in parallel with the
                 // other packages, rather than one at a time as the solver asks.
                 let candidates = speculative_candidates(&wheel_info);
-                index.set_versions(&pkg, VersionsResult {
-                    versions,
-                    wheel_info,
-                    fetch_error: None,
-                });
+                index.set_versions(
+                    &pkg,
+                    VersionsResult {
+                        versions,
+                        wheel_info,
+                        fetch_error: None,
+                    },
+                );
                 Self::prefetch_candidates(
-                    &pkg, candidates, false, &client, &index, &disk_cache, &semaphore, &marker_env, &counters,
-                ).await;
+                    &pkg,
+                    candidates,
+                    false,
+                    &client,
+                    &index,
+                    &disk_cache,
+                    &semaphore,
+                    &marker_env,
+                    &counters,
+                )
+                .await;
                 return;
             }
 
             // Stale cache — conditional request path.
-            let stale = disk_cache.lock().expect("poisoned")
+            let stale = disk_cache
+                .lock()
+                .expect("poisoned")
                 .get_versions_with_validators(&pkg);
 
             if let Some((versions, etag, lm, stale_wheel_info)) = stale {
                 match fetch_versions_async(
-                    &client, &index_url, &pkg, &semaphore,
-                    etag.as_deref(), lm.as_deref(),
-                ).await {
+                    &client,
+                    &index_url,
+                    &pkg,
+                    &semaphore,
+                    etag.as_deref(),
+                    lm.as_deref(),
+                )
+                .await
+                {
                     Ok(FetchVersionsOutcome::NotModified) => {
-                        if let Ok(mut c) = counters.lock() { c.version_304s += 1; }
-                        let wheel_info = stale_wheel_info.into_iter()
+                        if let Ok(mut c) = counters.lock() {
+                            c.version_304s += 1;
+                        }
+                        let wheel_info = stale_wheel_info
+                            .into_iter()
                             .filter_map(|(v_str, wheels)| {
                                 v_str.parse::<VypVersion>().ok().map(|v| (v, wheels))
                             })
                             .collect();
-                        index.set_versions(&pkg, VersionsResult {
-                            versions,
-                            wheel_info,
-                            fetch_error: None,
-                        });
+                        index.set_versions(
+                            &pkg,
+                            VersionsResult {
+                                versions,
+                                wheel_info,
+                                fetch_error: None,
+                            },
+                        );
                         let cache = Arc::clone(&disk_cache);
                         let p = pkg.clone();
                         tokio::task::spawn_blocking(move || {
-                            cache.lock().expect("poisoned")
+                            cache
+                                .lock()
+                                .expect("poisoned")
                                 .refresh_versions_timestamp(&p);
                         });
                         return;
                     }
                     Ok(fresh @ FetchVersionsOutcome::Fresh { .. }) => {
-                        if let Ok(mut c) = counters.lock() { c.version_fresh_fetches += 1; }
+                        if let Ok(mut c) = counters.lock() {
+                            c.version_fresh_fetches += 1;
+                        }
                         Self::handle_fresh_versions(
-                            fresh, &pkg, &client, &index, &disk_cache,
-                            &semaphore, &marker_env, &counters,
-                        ).await;
+                            fresh,
+                            &pkg,
+                            &client,
+                            &index,
+                            &disk_cache,
+                            &semaphore,
+                            &marker_env,
+                            &counters,
+                        )
+                        .await;
                         return;
                     }
                     Err(e) => {
                         tracing::debug!("conditional fetch failed for {}: {}", pkg, e);
-                        index.set_versions(&pkg, VersionsResult::error(format!(
-                            "failed to fetch versions for {} from {}: {}",
-                            pkg, index_url, e
-                        )));
+                        index.set_versions(
+                            &pkg,
+                            VersionsResult::error(format!(
+                                "failed to fetch versions for {} from {}: {}",
+                                pkg, index_url, e
+                            )),
+                        );
                         return;
                     }
                 }
             }
 
             // No cache at all — full HTTP fetch.
-            if let Ok(mut c) = counters.lock() { c.version_fresh_fetches += 1; }
-            match fetch_versions_async(
-                &client, &index_url, &pkg, &semaphore, None, None,
-            ).await {
+            if let Ok(mut c) = counters.lock() {
+                c.version_fresh_fetches += 1;
+            }
+            match fetch_versions_async(&client, &index_url, &pkg, &semaphore, None, None).await {
                 Ok(fresh @ FetchVersionsOutcome::Fresh { .. }) => {
                     Self::handle_fresh_versions(
-                        fresh, &pkg, &client, &index, &disk_cache,
-                        &semaphore, &marker_env, &counters,
-                    ).await;
+                        fresh,
+                        &pkg,
+                        &client,
+                        &index,
+                        &disk_cache,
+                        &semaphore,
+                        &marker_env,
+                        &counters,
+                    )
+                    .await;
                 }
                 Ok(FetchVersionsOutcome::NotModified) => {
-                    index.set_versions(&pkg, VersionsResult {
-                        versions: Vec::new(),
-                        wheel_info: HashMap::new(),
-                        fetch_error: None,
-                    });
+                    index.set_versions(
+                        &pkg,
+                        VersionsResult {
+                            versions: Vec::new(),
+                            wheel_info: HashMap::new(),
+                            fetch_error: None,
+                        },
+                    );
                 }
                 Err(e) => {
                     tracing::debug!("failed to fetch versions for {}: {}", pkg, e);
-                    index.set_versions(&pkg, VersionsResult::error(format!(
-                        "failed to fetch versions for {} from {}: {}",
-                        pkg, index_url, e
-                    )));
+                    index.set_versions(
+                        &pkg,
+                        VersionsResult::error(format!(
+                            "failed to fetch versions for {} from {}: {}",
+                            pkg, index_url, e
+                        )),
+                    );
                 }
             }
         });
@@ -439,9 +506,13 @@ impl PyPIMetadataProvider {
         // request into any wheel of this version.
         let wheels = versions.wheel_info.get(version).cloned();
         let pep658_url = wheels.as_ref().and_then(|ws| {
-            ws.iter().find(|w| w.has_metadata && w.filename.ends_with(".whl")).map(|w| w.url.clone())
+            ws.iter()
+                .find(|w| w.has_metadata && w.filename.ends_with(".whl"))
+                .map(|w| w.url.clone())
         });
-        let range_wheel_url = wheels.as_ref().and_then(|ws| best_wheel_url(ws, &self.marker_env));
+        let range_wheel_url = wheels
+            .as_ref()
+            .and_then(|ws| best_wheel_url(ws, &self.marker_env));
         // Last resort: the sdist, when no wheel of this version exists.
         let sdist_file = if pep658_url.is_none() && range_wheel_url.is_none() {
             wheels.as_ref().and_then(|ws| {
@@ -456,7 +527,9 @@ impl PyPIMetadataProvider {
         let sdist_builder = self.sdist_builder.clone();
         // With no wheel to read and a failed version list, report that failure
         // rather than an empty dependency list.
-        let versions_error = versions.fetch_error.clone()
+        let versions_error = versions
+            .fetch_error
+            .clone()
             .filter(|_| pep658_url.is_none() && range_wheel_url.is_none());
 
         let client = self.client.clone();
@@ -475,24 +548,40 @@ impl PyPIMetadataProvider {
             let cached = cached_metadata(&disk_cache, &pkg, &ver);
 
             if let Some(cached_meta) = cached {
-                if let Ok(mut c) = counters.lock() { c.metadata_disk_hits += 1; }
-                idx.set_metadata(&pkg, &ver, MetadataResult {
-                    dependencies: cached_meta.dependencies.clone(),
-                    full_metadata: Some(cached_meta),
-                    fetch_error: None,
-                });
+                if let Ok(mut c) = counters.lock() {
+                    c.metadata_disk_hits += 1;
+                }
+                idx.set_metadata(
+                    &pkg,
+                    &ver,
+                    MetadataResult {
+                        dependencies: cached_meta.dependencies.clone(),
+                        full_metadata: Some(cached_meta),
+                        fetch_error: None,
+                    },
+                );
                 return;
             }
 
-            if let Ok(mut c) = counters.lock() { c.metadata_network_fetches += 1; }
+            if let Ok(mut c) = counters.lock() {
+                c.metadata_network_fetches += 1;
+            }
 
             // Prefer PEP 658; fall back to a ranged wheel fetch.
             let fetched: Option<PackageMetadata> = if let Some(ref url) = pep658_url {
                 let metadata_url = format!("{}.metadata", url);
-                fetch_metadata_async(&client, &metadata_url, &pkg, &ver, &env, &sem).await.ok()
+                fetch_metadata_async(&client, &metadata_url, &pkg, &ver, &env, &sem)
+                    .await
+                    .ok()
             } else if let Some(ref wheel_url) = range_wheel_url {
                 match fetch_wheel_metadata(&client, wheel_url, &sem).await {
-                    Ok(text) => Some(metadata_from_text(&text, &pkg, &ver, &env, wheel_url.clone())),
+                    Ok(text) => Some(metadata_from_text(
+                        &text,
+                        &pkg,
+                        &ver,
+                        &env,
+                        wheel_url.clone(),
+                    )),
                     Err(e) => {
                         tracing::debug!("range metadata fetch failed for {}=={}: {}", pkg, ver, e);
                         None
@@ -500,15 +589,28 @@ impl PyPIMetadataProvider {
                 }
             } else if let Some(sdist) = sdist_file {
                 match sdist_metadata(&client, &sdist, sdist_builder, &sem).await {
-                    Ok(text) => Some(metadata_from_text(&text, &pkg, &ver, &env, sdist.url.clone())),
+                    Ok(text) => Some(metadata_from_text(
+                        &text,
+                        &pkg,
+                        &ver,
+                        &env,
+                        sdist.url.clone(),
+                    )),
                     Err(e) => {
-                        let message = format!("cannot get metadata for {}=={} from its sdist: {}", pkg, ver, e);
+                        let message = format!(
+                            "cannot get metadata for {}=={} from its sdist: {}",
+                            pkg, ver, e
+                        );
                         tracing::warn!("{}", message);
-                        idx.set_metadata(&pkg, &ver, MetadataResult {
-                            dependencies: Vec::new(),
-                            full_metadata: None,
-                            fetch_error: Some(message),
-                        });
+                        idx.set_metadata(
+                            &pkg,
+                            &ver,
+                            MetadataResult {
+                                dependencies: Vec::new(),
+                                full_metadata: None,
+                                fetch_error: Some(message),
+                            },
+                        );
                         return;
                     }
                 }
@@ -518,11 +620,15 @@ impl PyPIMetadataProvider {
 
             match fetched {
                 Some(meta) => {
-                    idx.set_metadata(&pkg, &ver, MetadataResult {
-                        dependencies: meta.dependencies.clone(),
-                        full_metadata: Some(meta.clone()),
-                        fetch_error: None,
-                    });
+                    idx.set_metadata(
+                        &pkg,
+                        &ver,
+                        MetadataResult {
+                            dependencies: meta.dependencies.clone(),
+                            full_metadata: Some(meta.clone()),
+                            fetch_error: None,
+                        },
+                    );
                     let p = pkg;
                     let v = ver;
                     // Await the write so it isn't dropped when the runtime is
@@ -536,11 +642,15 @@ impl PyPIMetadataProvider {
                     .await;
                 }
                 None => {
-                    idx.set_metadata(&pkg, &ver, MetadataResult {
-                        dependencies: Vec::new(),
-                        full_metadata: None,
-                        fetch_error: versions_error,
-                    });
+                    idx.set_metadata(
+                        &pkg,
+                        &ver,
+                        MetadataResult {
+                            dependencies: Vec::new(),
+                            full_metadata: None,
+                            fetch_error: versions_error,
+                        },
+                    );
                 }
             }
         });
@@ -559,14 +669,21 @@ impl PyPIMetadataProvider {
         marker_env: &MarkerEnvironment,
         counters: &Arc<Mutex<ProfileCounters>>,
     ) {
-        let FetchVersionsOutcome::Fresh { result, etag, last_modified } = outcome else {
+        let FetchVersionsOutcome::Fresh {
+            result,
+            etag,
+            last_modified,
+        } = outcome
+        else {
             return;
         };
 
         let candidates = speculative_candidates(&result.wheel_info);
 
         let vers_for_cache = result.versions.clone();
-        let wheel_info_for_cache: HashMap<String, Vec<WheelInfo>> = result.wheel_info.iter()
+        let wheel_info_for_cache: HashMap<String, Vec<WheelInfo>> = result
+            .wheel_info
+            .iter()
             .map(|(v, w)| (v.to_string(), w.clone()))
             .collect();
         index.set_versions(pkg, result);
@@ -575,14 +692,20 @@ impl PyPIMetadataProvider {
             let cache = Arc::clone(disk_cache);
             let p = pkg.to_string();
             tokio::task::spawn_blocking(move || {
-                cache.lock().expect("poisoned")
-                    .insert_versions(&p, &vers_for_cache, etag, last_modified, wheel_info_for_cache);
+                cache.lock().expect("poisoned").insert_versions(
+                    &p,
+                    &vers_for_cache,
+                    etag,
+                    last_modified,
+                    wheel_info_for_cache,
+                );
             });
         }
 
         Self::prefetch_candidates(
             pkg, candidates, true, client, index, disk_cache, semaphore, marker_env, counters,
-        ).await;
+        )
+        .await;
     }
 
     /// Fetch metadata for the likely picks of a package: from the disk cache
@@ -614,15 +737,23 @@ impl PyPIMetadataProvider {
             }
             let claim = MetadataClaim::new(Arc::clone(index), pkg, &version);
             if let Some(cached_meta) = cached_meta {
-                if let Ok(mut c) = counters.lock() { c.metadata_disk_hits += 1; }
-                index.set_metadata(pkg, &version, MetadataResult {
-                    dependencies: cached_meta.dependencies.clone(),
-                    full_metadata: Some(cached_meta),
-                    fetch_error: None,
-                });
+                if let Ok(mut c) = counters.lock() {
+                    c.metadata_disk_hits += 1;
+                }
+                index.set_metadata(
+                    pkg,
+                    &version,
+                    MetadataResult {
+                        dependencies: cached_meta.dependencies.clone(),
+                        full_metadata: Some(cached_meta),
+                        fetch_error: None,
+                    },
+                );
                 continue;
             }
-            if let Ok(mut c) = counters.lock() { c.metadata_network_fetches += 1; }
+            if let Ok(mut c) = counters.lock() {
+                c.metadata_network_fetches += 1;
+            }
             let idx = Arc::clone(index);
             let cl = client.clone();
             let env = marker_env.clone();
@@ -632,33 +763,40 @@ impl PyPIMetadataProvider {
             let metadata_url = format!("{}.metadata", wheel_url);
             tokio::spawn(async move {
                 let _claim = claim;
-                match fetch_metadata_async(
-                    &cl, &metadata_url, &p, &version,
-                    &env, &sem,
-                ).await {
+                match fetch_metadata_async(&cl, &metadata_url, &p, &version, &env, &sem).await {
                     Ok(meta) => {
                         let deps = meta.dependencies.clone();
-                        idx.set_metadata(&p, &version, MetadataResult {
-                            dependencies: deps,
-                            full_metadata: Some(meta.clone()),
-                            fetch_error: None,
-                        });
+                        idx.set_metadata(
+                            &p,
+                            &version,
+                            MetadataResult {
+                                dependencies: deps,
+                                full_metadata: Some(meta.clone()),
+                                fetch_error: None,
+                            },
+                        );
                         let v = version.clone();
                         // Awaited so the entry is persisted before exit;
                         // the solver already has the result.
                         let _ = tokio::task::spawn_blocking(move || {
-                            cache.lock().expect("poisoned")
-                                .insert(&p, &v, &meta);
+                            cache.lock().expect("poisoned").insert(&p, &v, &meta);
                         })
                         .await;
                     }
                     Err(e) => {
                         // Never record a failed fetch as "no dependencies".
-                        idx.set_metadata(&p, &version, MetadataResult {
-                            dependencies: Vec::new(),
-                            full_metadata: None,
-                            fetch_error: Some(format!("metadata fetch for {}=={} failed: {}", p, version, e)),
-                        });
+                        idx.set_metadata(
+                            &p,
+                            &version,
+                            MetadataResult {
+                                dependencies: Vec::new(),
+                                full_metadata: None,
+                                fetch_error: Some(format!(
+                                    "metadata fetch for {}=={} failed: {}",
+                                    p, version, e
+                                )),
+                            },
+                        );
                     }
                 }
             });
@@ -748,9 +886,7 @@ async fn fetch_versions_async(
         // 404/410 mean the package genuinely isn't on this index (empty, no
         // error — lets scoped indexes fall through). Any other non-success
         // status is a transport/server failure the resolver should surface.
-        if status == reqwest::StatusCode::NOT_FOUND
-            || status == reqwest::StatusCode::GONE
-        {
+        if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
             return Ok(FetchVersionsOutcome::Fresh {
                 result: VersionsResult {
                     versions: Vec::new(),
@@ -877,7 +1013,9 @@ async fn parse_json_simple_async(
             Err(_) => continue,
         };
 
-        let has_metadata = file.core_metadata.as_ref()
+        let has_metadata = file
+            .core_metadata
+            .as_ref()
             .or(file.data_dist_info_metadata.as_ref())
             .map(|v| match v {
                 serde_json::Value::Bool(b) => *b,
@@ -898,18 +1036,18 @@ async fn parse_json_simple_async(
                 versions.push(file_version.clone());
             }
 
-            wheel_info
-                .entry(file_version)
-                .or_default()
-                .push(WheelInfo {
-                    filename: file.filename,
-                    url: file.url,
-                    has_metadata,
-                    requires_python: file.requires_python,
-                    yanked,
-                    hashes: file.hashes,
-                    upload_time: file.upload_time.as_deref().and_then(crate::timestamp::parse_rfc3339),
-                });
+            wheel_info.entry(file_version).or_default().push(WheelInfo {
+                filename: file.filename,
+                url: file.url,
+                has_metadata,
+                requires_python: file.requires_python,
+                yanked,
+                hashes: file.hashes,
+                upload_time: file
+                    .upload_time
+                    .as_deref()
+                    .and_then(crate::timestamp::parse_rfc3339),
+            });
         }
     }
 
@@ -926,7 +1064,9 @@ fn extract_version_from_raw_filename(raw: &str, fname_offset: usize) -> Option<V
     let after = &raw[fname_offset..];
     let colon = after.find(':')?;
     let rest = after[colon + 1..].trim_start();
-    if !rest.starts_with('"') { return None; }
+    if !rest.starts_with('"') {
+        return None;
+    }
     let end = rest[1..].find('"')?;
     let filename = &rest[1..1 + end];
     extract_version_from_filename(filename)
@@ -967,7 +1107,10 @@ async fn fetch_metadata_async(
 
 /// Parse RFC 822-style METADATA content to extract `Requires-Dist` entries,
 /// filtering by PEP 508 environment markers.
-pub fn parse_metadata_requires_dist(content: &str, marker_env: &MarkerEnvironment) -> Vec<Requirement> {
+pub fn parse_metadata_requires_dist(
+    content: &str,
+    marker_env: &MarkerEnvironment,
+) -> Vec<Requirement> {
     let mut deps = Vec::new();
     for line in content.lines() {
         if let Some(rest) = line.strip_prefix("Requires-Dist:") {
@@ -1018,7 +1161,9 @@ fn should_include_requirement(req: &Requirement, env: &MarkerEnvironment) -> boo
 /// trades a little latency on heavily constrained resolves for far less
 /// wasted bandwidth; the on-demand path covers any miss. Tunable via
 /// `VYP_PREFETCH_DEPTH`.
-fn speculative_candidates(wheel_info: &HashMap<VypVersion, Vec<WheelInfo>>) -> Vec<(VypVersion, String)> {
+fn speculative_candidates(
+    wheel_info: &HashMap<VypVersion, Vec<WheelInfo>>,
+) -> Vec<(VypVersion, String)> {
     let mut candidates: Vec<(VypVersion, String)> = wheel_info
         .iter()
         .filter_map(|(v, wheels)| {
@@ -1039,7 +1184,10 @@ fn cached_metadata(
     pkg: &str,
     version: &VypVersion,
 ) -> Option<PackageMetadata> {
-    let path = disk_cache.lock().expect("poisoned").entry_path(pkg, version)?;
+    let path = disk_cache
+        .lock()
+        .expect("poisoned")
+        .entry_path(pkg, version)?;
     let meta = crate::cache::MetadataCache::read_entry(&path);
     if meta.is_none() {
         disk_cache.lock().expect("poisoned").forget(pkg, version);
@@ -1227,7 +1375,8 @@ impl MetadataProvider for PyPIMetadataProvider {
             // Only versions with a PEP 658 sidecar are prefetched. Others are
             // left unclaimed so `get_metadata` can still try a ranged wheel
             // read instead of finding an empty result here.
-            let has_metadata = self.index
+            let has_metadata = self
+                .index
                 .get_wheel_info(&normalized, version)
                 .map(|wheels| wheels.iter().any(|w| w.has_metadata))
                 .unwrap_or(false);
@@ -1252,46 +1401,58 @@ impl MetadataProvider for PyPIMetadataProvider {
             self.runtime.spawn(async move {
                 let _claim = claim;
                 if let Some(cached_meta) = cached_metadata(&cache, &pkg, &ver) {
-                    idx.set_metadata(&pkg, &ver, MetadataResult {
-                        dependencies: cached_meta.dependencies.clone(),
-                        full_metadata: Some(cached_meta),
-                        fetch_error: None,
-                    });
+                    idx.set_metadata(
+                        &pkg,
+                        &ver,
+                        MetadataResult {
+                            dependencies: cached_meta.dependencies.clone(),
+                            full_metadata: Some(cached_meta),
+                            fetch_error: None,
+                        },
+                    );
                     return;
                 }
-                let wheel_url = idx
-                    .get_wheel_info(&pkg, &ver)
-                    .and_then(|wheels| wheels.iter().find(|w| w.has_metadata).map(|w| w.url.clone()));
+                let wheel_url = idx.get_wheel_info(&pkg, &ver).and_then(|wheels| {
+                    wheels
+                        .iter()
+                        .find(|w| w.has_metadata)
+                        .map(|w| w.url.clone())
+                });
 
                 if let Some(wheel_url) = wheel_url {
                     let metadata_url = format!("{}.metadata", wheel_url);
-                    if let Ok(meta) = fetch_metadata_async(
-                        &client, &metadata_url, &pkg, &ver, &env, &sem,
-                    ).await {
+                    if let Ok(meta) =
+                        fetch_metadata_async(&client, &metadata_url, &pkg, &ver, &env, &sem).await
+                    {
                         cache.lock().expect("poisoned").insert(&pkg, &ver, &meta);
                         let deps = meta.dependencies.clone();
-                        idx.set_metadata(&pkg, &ver, MetadataResult {
-                            dependencies: deps,
-                            full_metadata: Some(meta),
-                            fetch_error: None,
-                        });
+                        idx.set_metadata(
+                            &pkg,
+                            &ver,
+                            MetadataResult {
+                                dependencies: deps,
+                                full_metadata: Some(meta),
+                                fetch_error: None,
+                            },
+                        );
                         return;
                     }
                 }
 
-                idx.set_metadata(&pkg, &ver, MetadataResult {
-                    dependencies: Vec::new(),
-                    full_metadata: None,
-                    fetch_error: None,
-                });
+                idx.set_metadata(
+                    &pkg,
+                    &ver,
+                    MetadataResult {
+                        dependencies: Vec::new(),
+                        full_metadata: None,
+                        fetch_error: None,
+                    },
+                );
             });
         }
     }
 
-    fn try_available_versions(
-        &self,
-        package: &VypPackage,
-    ) -> Option<PackageVersions> {
+    fn try_available_versions(&self, package: &VypPackage) -> Option<PackageVersions> {
         let normalized = package.name().to_lowercase().replace(['-', '.'], "_");
         let result = self.index.try_get_versions(&normalized)?;
         let mut versions = result.versions.clone();
@@ -1306,19 +1467,12 @@ impl MetadataProvider for PyPIMetadataProvider {
         }
     }
 
-    fn wheel_url(
-        &self,
-        package: &str,
-        version: &VypVersion,
-    ) -> Option<(String, String)> {
-        self.wheel_dist(package, version).map(|d| (d.filename, d.url))
+    fn wheel_url(&self, package: &str, version: &VypVersion) -> Option<(String, String)> {
+        self.wheel_dist(package, version)
+            .map(|d| (d.filename, d.url))
     }
 
-    fn wheel_dist(
-        &self,
-        package: &str,
-        version: &VypVersion,
-    ) -> Option<vyp_api::WheelDist> {
+    fn wheel_dist(&self, package: &str, version: &VypVersion) -> Option<vyp_api::WheelDist> {
         let normalized = package.to_lowercase().replace(['-', '.'], "_");
         let wheels = self.index.get_wheel_info(&normalized, version)?;
         let tags = &self.platform_tags;
@@ -1344,7 +1498,11 @@ impl MetadataProvider for PyPIMetadataProvider {
         best.map(|(_, w)| vyp_api::WheelDist {
             filename: w.filename.clone(),
             url: w.url.clone(),
-            hashes: w.hashes.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            hashes: w
+                .hashes
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
             size: None,
         })
     }
@@ -1364,7 +1522,11 @@ impl MetadataProvider for PyPIMetadataProvider {
             .map(|w| vyp_api::WheelDist {
                 filename: w.filename.clone(),
                 url: w.url.clone(),
-                hashes: w.hashes.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                hashes: w
+                    .hashes
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
                 size: None,
             })
     }
@@ -1376,7 +1538,10 @@ impl MetadataProvider for PyPIMetadataProvider {
         m.insert("version_304s".into(), c.version_304s);
         m.insert("version_fresh_fetches".into(), c.version_fresh_fetches);
         m.insert("metadata_disk_hits".into(), c.metadata_disk_hits);
-        m.insert("metadata_network_fetches".into(), c.metadata_network_fetches);
+        m.insert(
+            "metadata_network_fetches".into(),
+            c.metadata_network_fetches,
+        );
         m
     }
 }
@@ -1521,8 +1686,7 @@ mod tests {
 
     #[test]
     fn test_wheel_filename_parse_standard() {
-        let wf =
-            WheelFilename::parse("numpy-2.3.2-cp313-cp313t-musllinux_1_2_x86_64.whl").unwrap();
+        let wf = WheelFilename::parse("numpy-2.3.2-cp313-cp313t-musllinux_1_2_x86_64.whl").unwrap();
         assert_eq!(wf.distribution, "numpy");
         assert_eq!(wf.version, "2.3.2");
         assert!(wf.build_tag.is_none());
@@ -1531,10 +1695,9 @@ mod tests {
 
     #[test]
     fn test_wheel_filename_parse_with_variant() {
-        let wf = WheelFilename::parse(
-            "numpy-2.3.2-cp313-cp313t-musllinux_1_2_x86_64-x86_64_v3.whl",
-        )
-        .unwrap();
+        let wf =
+            WheelFilename::parse("numpy-2.3.2-cp313-cp313t-musllinux_1_2_x86_64-x86_64_v3.whl")
+                .unwrap();
         assert_eq!(wf.distribution, "numpy");
         assert_eq!(wf.variant_label.as_deref(), Some("x86_64_v3"));
         assert!(wf.build_tag.is_none());
@@ -1542,10 +1705,9 @@ mod tests {
 
     #[test]
     fn test_wheel_filename_parse_with_build_and_variant() {
-        let wf = WheelFilename::parse(
-            "numpy-2.3.2-1-cp313-cp313t-musllinux_1_2_x86_64-x86_64_v3.whl",
-        )
-        .unwrap();
+        let wf =
+            WheelFilename::parse("numpy-2.3.2-1-cp313-cp313t-musllinux_1_2_x86_64-x86_64_v3.whl")
+                .unwrap();
         assert_eq!(wf.build_tag.as_deref(), Some("1"));
         assert_eq!(wf.variant_label.as_deref(), Some("x86_64_v3"));
     }
@@ -1575,7 +1737,9 @@ mod tests {
         }
 
         let set: std::collections::HashSet<String> =
-            ["torch".to_string(), "torchvision".to_string()].into_iter().collect();
+            ["torch".to_string(), "torchvision".to_string()]
+                .into_iter()
+                .collect();
         let scope: Arc<dyn IndexScope> = Arc::new(SetScope(Mutex::new(set)));
         let provider = PyPIMetadataProvider::with_name(
             "pytorch",

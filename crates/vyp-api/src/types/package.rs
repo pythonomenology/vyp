@@ -49,8 +49,7 @@ impl fmt::Display for VypPackage {
 
 /// Normalize a Python package name per PEP 503.
 pub fn normalize_package_name(name: &str) -> String {
-    name.to_lowercase()
-        .replace(['-', '.', ' '], "_")
+    name.to_lowercase().replace(['-', '.', ' '], "_")
 }
 
 #[cfg(test)]

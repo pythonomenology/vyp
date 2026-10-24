@@ -33,13 +33,21 @@ pub fn run(args: UninstallArgs) -> miette::Result<()> {
         match find_installed(&layout, name) {
             Some(dist) => {
                 if args.dry_run {
-                    println!("Would remove {} == {} ({})", dist.name, dist.version, dist.dist_info.display());
+                    println!(
+                        "Would remove {} == {} ({})",
+                        dist.name,
+                        dist.version,
+                        dist.dist_info.display()
+                    );
                     continue;
                 }
                 let removed = uninstall_dist(&layout, &dist)
                     .map_err(|e| miette::miette!("Failed to uninstall {}: {}", name, e))?;
                 removed_total += removed;
-                println!("Uninstalled {} == {} ({} files)", dist.name, dist.version, removed);
+                println!(
+                    "Uninstalled {} == {} ({} files)",
+                    dist.name, dist.version, removed
+                );
             }
             None => not_found.push(name.clone()),
         }

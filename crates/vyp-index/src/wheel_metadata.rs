@@ -55,11 +55,7 @@ struct Chunk {
 /// Issue a ranged GET. Returns the body and the absolute offset of its first
 /// byte: from `Content-Range` for a `206`, or `0` if the server returned the
 /// whole file (`200`).
-async fn range_get(
-    client: &reqwest::Client,
-    url: &str,
-    range: &str,
-) -> Result<Chunk, DynError> {
+async fn range_get(client: &reqwest::Client, url: &str, range: &str) -> Result<Chunk, DynError> {
     let mut resp = crate::auth::apply_auth(client.get(url).header(RANGE, range), url)
         .send()
         .await?;
@@ -143,7 +139,11 @@ fn find_entry(cd: &[u8], matches: impl Fn(&[u8]) -> bool) -> Option<CentralEntry
         let name = cd.get(name_start..name_start + name_len)?;
 
         if matches(name) {
-            return Some(CentralEntry { method, compressed_size, local_offset });
+            return Some(CentralEntry {
+                method,
+                compressed_size,
+                local_offset,
+            });
         }
         pos = name_start + name_len + extra_len + comment_len;
     }
@@ -203,7 +203,8 @@ pub async fn fetch_wheel_member(
 
     // 1. Tail: EOCD + (usually) the whole central directory.
     let tail = range_get(client, wheel_url, &format!("bytes=-{}", tail_bytes)).await?;
-    let (cd_offset, cd_size) = read_eocd(&tail.bytes).ok_or("no end-of-central-directory record")?;
+    let (cd_offset, cd_size) =
+        read_eocd(&tail.bytes).ok_or("no end-of-central-directory record")?;
     if cd_offset == 0xFFFF_FFFF || cd_size == 0xFFFF_FFFF {
         return Err("ZIP64 wheel not supported by range fetch".into());
     }
@@ -245,7 +246,9 @@ pub async fn fetch_wheel_member(
     let extra_len = le_u16(lb, 28).ok_or("short local header")? as usize;
     let data_start = 30 + name_len + extra_len;
     let data_end = data_start + entry.compressed_size as usize;
-    let data = lb.get(data_start..data_end).ok_or("local member truncated")?;
+    let data = lb
+        .get(data_start..data_end)
+        .ok_or("local member truncated")?;
 
     decompress(entry.method, data).map(Some)
 }
@@ -278,7 +281,10 @@ mod tests {
         let extra_len = le_u16(lb, 28).unwrap() as usize;
         let data_start = 30 + name_len + extra_len;
         let data = &lb[data_start..data_start + entry.compressed_size as usize];
-        assert_eq!(decompress(entry.method, data).unwrap(), String::from_utf8_lossy(metadata));
+        assert_eq!(
+            decompress(entry.method, data).unwrap(),
+            String::from_utf8_lossy(metadata)
+        );
     }
 
     #[test]

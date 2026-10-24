@@ -1,4 +1,4 @@
-use vyp_api::{VypPackage, VypVersion, Requirement};
+use vyp_api::{Requirement, VypPackage, VypVersion};
 
 /// Parsed metadata from a distribution's METADATA file or pyproject.toml.
 #[derive(Debug, Clone)]

@@ -30,7 +30,10 @@ impl PreReleaseFilter {
     }
 
     pub fn with_policy(policy: PreReleasePolicy) -> Self {
-        Self { policy, allowed: HashSet::new() }
+        Self {
+            policy,
+            allowed: HashSet::new(),
+        }
     }
 
     /// Allow pre-releases of these packages whatever the policy.

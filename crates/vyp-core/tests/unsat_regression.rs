@@ -43,7 +43,7 @@ fn transitively_unsatisfiable_root() {
     let mut p = OfflineMetadataProvider::new();
     p.add_package("p0", v(1), vec![]);
     p.add_package("p1", v(1), vec![lt("p0", 1)]); // p1's only version needs impossible p0
-    // root -> p1 ; resolving p1 forces an impossible p0, which must bubble up.
+                                                  // root -> p1 ; resolving p1 forces an impossible p0, which must bubble up.
     assert_no_solution(p, vec![Requirement::new("p1")]);
 }
 

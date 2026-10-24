@@ -15,15 +15,19 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 /// Builds METADATA for an sdist whose `PKG-INFO` can't be trusted, by
 /// running its build backend. Supplied by the frontend, which knows how to
 /// make build environments.
-pub type SdistMetadataBuilder = std::sync::Arc<dyn Fn(&Path) -> Result<String, String> + Send + Sync>;
+pub type SdistMetadataBuilder =
+    std::sync::Arc<dyn Fn(&Path) -> Result<String, String> + Send + Sync>;
 
 pub fn cache_dir() -> PathBuf {
     std::env::var("VYP_CACHE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            std::env::var("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|_| {
-                PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".cache")
-            })
+            std::env::var("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| {
+                    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+                        .join(".cache")
+                })
         })
         .join("vyp")
         .join("cache")
@@ -60,7 +64,11 @@ pub async fn download(
     let actual = hex(&Sha256::digest(&bytes));
     if let Some(expected) = expected_sha256 {
         if actual != expected {
-            return Err(format!("hash mismatch for {}: expected {}, got {}", filename, expected, actual).into());
+            return Err(format!(
+                "hash mismatch for {}: expected {}, got {}",
+                filename, expected, actual
+            )
+            .into());
         }
     }
     let dir = dest.parent().ok_or("bad cache path")?;
@@ -73,11 +81,17 @@ pub async fn download(
 
 /// The top-level `PKG-INFO` of an sdist (`<name>-<version>/PKG-INFO`).
 pub fn read_pkg_info(path: &Path) -> Result<String, DynError> {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
     let is_top_level_pkg_info = |p: &str| {
         let p = p.trim_start_matches("./");
         let mut parts = p.split('/');
-        matches!((parts.next(), parts.next(), parts.next()), (Some(_), Some("PKG-INFO"), None))
+        matches!(
+            (parts.next(), parts.next(), parts.next()),
+            (Some(_), Some("PKG-INFO"), None)
+        )
     };
     if name.ends_with(".zip") {
         let mut zip = zip::ZipArchive::new(std::fs::File::open(path)?)?;
@@ -112,7 +126,9 @@ pub fn has_static_requirements(pkg_info: &str) -> bool {
         if line.is_empty() {
             break; // end of headers; the description follows
         }
-        let Some((key, value)) = line.split_once(':') else { continue };
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
         let (key, value) = (key.trim().to_ascii_lowercase(), value.trim());
         if key == "metadata-version" {
             let mut parts = value.split('.');
@@ -132,10 +148,16 @@ mod tests {
 
     #[test]
     fn static_requirement_detection() {
-        assert!(has_static_requirements("Metadata-Version: 2.2\nName: x\nRequires-Dist: a\n"));
-        assert!(has_static_requirements("Metadata-Version: 2.4\nDynamic: License\n\nbody Dynamic: Requires-Dist"));
+        assert!(has_static_requirements(
+            "Metadata-Version: 2.2\nName: x\nRequires-Dist: a\n"
+        ));
+        assert!(has_static_requirements(
+            "Metadata-Version: 2.4\nDynamic: License\n\nbody Dynamic: Requires-Dist"
+        ));
         assert!(!has_static_requirements("Metadata-Version: 2.1\nName: x\n"));
-        assert!(!has_static_requirements("Metadata-Version: 2.3\nDynamic: Requires-Dist\n"));
+        assert!(!has_static_requirements(
+            "Metadata-Version: 2.3\nDynamic: Requires-Dist\n"
+        ));
     }
 
     #[test]
@@ -143,8 +165,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("vyp-sdist-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("demo-1.0.tar.gz");
-        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
-        for (name, body) in [("demo-1.0/PKG-INFO", "Metadata-Version: 2.2\nName: demo\n"), ("demo-1.0/sub/PKG-INFO", "nope")] {
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        for (name, body) in [
+            ("demo-1.0/PKG-INFO", "Metadata-Version: 2.2\nName: demo\n"),
+            ("demo-1.0/sub/PKG-INFO", "nope"),
+        ] {
             let mut h = tar::Header::new_gnu();
             h.set_size(body.len() as u64);
             h.set_mode(0o644);

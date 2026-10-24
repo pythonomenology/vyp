@@ -104,7 +104,11 @@ impl fmt::Display for LockFileDiff {
         if !self.changed.is_empty() {
             writeln!(f, "Changed:")?;
             for ch in &self.changed {
-                writeln!(f, "  ~ {} {} -> {}", ch.name, ch.old_version, ch.new_version)?;
+                writeln!(
+                    f,
+                    "  ~ {} {} -> {}",
+                    ch.name, ch.old_version, ch.new_version
+                )?;
             }
         }
 

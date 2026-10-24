@@ -5,9 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use vyp_api::Requirement;
 use vyp_core::{ResolveProgress, ResolveTiming};
 
+use super::common::{
+    install_lockfile, resolve_from_config, target_venv, InstallOptions, InstallTiming, ResolveOut,
+};
 use crate::config::settings::VypConfig;
 use crate::lock::lockfile::LockFile;
-use super::common::{install_lockfile, resolve_from_config, target_venv, InstallOptions, InstallTiming, ResolveOut};
 
 #[derive(Args)]
 pub struct InstallArgs {
@@ -52,14 +54,22 @@ pub fn run(args: InstallArgs) -> miette::Result<()> {
             ));
         }
         let lockfile = LockFile::read_from_file(lockfile_path)?;
-        let config = if args.project.exists() { VypConfig::from_file(&args.project)? } else { VypConfig::default() };
+        let config = if args.project.exists() {
+            VypConfig::from_file(&args.project)?
+        } else {
+            VypConfig::default()
+        };
         let layout = target_venv(&config, args.venv.as_deref())?;
-        let install_timing = install_lockfile(&lockfile, &layout, &InstallOptions {
-            dry_run: args.dry_run,
-            startup: config.startup_files.clone(),
-            lock_dir: lockfile_path.parent().map(|p| p.to_path_buf()),
-            ..Default::default()
-        })?;
+        let install_timing = install_lockfile(
+            &lockfile,
+            &layout,
+            &InstallOptions {
+                dry_run: args.dry_run,
+                startup: config.startup_files.clone(),
+                lock_dir: lockfile_path.parent().map(|p| p.to_path_buf()),
+                ..Default::default()
+            },
+        )?;
         if !args.dry_run {
             crate::env::provenance::record_install(&layout, &lockfile)?;
         }
@@ -117,10 +127,7 @@ pub fn run(args: InstallArgs) -> miette::Result<()> {
                     if has_printed.load(Ordering::Relaxed) {
                         let _ = write!(stderr, "\x1b[2K\r");
                     }
-                    let _ = writeln!(
-                        stderr,
-                        "Resolved {package_count} packages in {elapsed:.2}s"
-                    );
+                    let _ = writeln!(stderr, "Resolved {package_count} packages in {elapsed:.2}s");
                     let _ = stderr.flush();
                 }
                 _ => {}
@@ -138,11 +145,13 @@ pub fn run(args: InstallArgs) -> miette::Result<()> {
     )?;
 
     let (lockfile, resolve_timing) = match &resolve_out {
-        ResolveOut::Single(result) => (
-            LockFile::from_resolution(result),
-            result.timing.clone(),
-        ),
-        ResolveOut::Universal { entries, environments, errata_feeds, exclude_newer } => (
+        ResolveOut::Single(result) => (LockFile::from_resolution(result), result.timing.clone()),
+        ResolveOut::Universal {
+            entries,
+            environments,
+            errata_feeds,
+            exclude_newer,
+        } => (
             LockFile::from_universal_resolution(
                 entries,
                 environments,
@@ -153,14 +162,18 @@ pub fn run(args: InstallArgs) -> miette::Result<()> {
             None,
         ),
     };
-    let install_timing = install_lockfile(&lockfile, &layout, &InstallOptions {
-        dry_run: args.dry_run,
-        default_index: Some(config.index_url.clone()),
-        client: Some(shared_client),
-        startup: config.startup_files.clone(),
-        lock_dir: config.project_dir.clone(),
-        ..Default::default()
-    })?;
+    let install_timing = install_lockfile(
+        &lockfile,
+        &layout,
+        &InstallOptions {
+            dry_run: args.dry_run,
+            default_index: Some(config.index_url.clone()),
+            client: Some(shared_client),
+            startup: config.startup_files.clone(),
+            lock_dir: config.project_dir.clone(),
+            ..Default::default()
+        },
+    )?;
     if !args.dry_run {
         crate::env::provenance::record_install(&layout, &lockfile)?;
     }
@@ -180,19 +193,43 @@ fn print_profile(resolve: Option<&ResolveTiming>, install: Option<&InstallTiming
 
     if let Some(r) = resolve {
         grand_total_ms += r.total_ms;
-        let _ = writeln!(stderr, "Resolve:        {:>8.1}ms  ({} iterations)", r.total_ms, r.iterations);
+        let _ = writeln!(
+            stderr,
+            "Resolve:        {:>8.1}ms  ({} iterations)",
+            r.total_ms, r.iterations
+        );
 
-        let vdh = r.provider_counters.get("version_disk_hits").copied().unwrap_or(0);
-        let v304 = r.provider_counters.get("version_304s").copied().unwrap_or(0);
-        let vnet = r.provider_counters.get("version_fresh_fetches").copied().unwrap_or(0);
+        let vdh = r
+            .provider_counters
+            .get("version_disk_hits")
+            .copied()
+            .unwrap_or(0);
+        let v304 = r
+            .provider_counters
+            .get("version_304s")
+            .copied()
+            .unwrap_or(0);
+        let vnet = r
+            .provider_counters
+            .get("version_fresh_fetches")
+            .copied()
+            .unwrap_or(0);
         let _ = writeln!(
             stderr,
             "  version wait: {:>8.1}ms  ({} fetches: {} disk, {} 304, {} network)",
             r.version_wait_ms, r.version_fetches, vdh, v304, vnet,
         );
 
-        let mdh = r.provider_counters.get("metadata_disk_hits").copied().unwrap_or(0);
-        let mnet = r.provider_counters.get("metadata_network_fetches").copied().unwrap_or(0);
+        let mdh = r
+            .provider_counters
+            .get("metadata_disk_hits")
+            .copied()
+            .unwrap_or(0);
+        let mnet = r
+            .provider_counters
+            .get("metadata_network_fetches")
+            .copied()
+            .unwrap_or(0);
         let _ = writeln!(
             stderr,
             "  meta wait:    {:>8.1}ms  ({} fetches: {} disk, {} network)",
@@ -208,13 +245,37 @@ fn print_profile(resolve: Option<&ResolveTiming>, install: Option<&InstallTiming
         let _ = writeln!(stderr, "Install:        {:>8.1}ms  (wall)", i.total_ms);
         let _ = writeln!(stderr, "  marker_detect:   {:>8.1}ms", i.marker_detect_ms);
         let _ = writeln!(stderr, "  site_packages:   {:>8.1}ms", i.site_packages_ms);
-        let _ = writeln!(stderr, "  cache_check:     {:>8.1}ms  ({} cached, {} to download)", i.cache_check_ms, i.cached_count, i.download_count);
+        let _ = writeln!(
+            stderr,
+            "  cache_check:     {:>8.1}ms  ({} cached, {} to download)",
+            i.cache_check_ms, i.cached_count, i.download_count
+        );
         let _ = writeln!(stderr, "  runtime_client:  {:>8.1}ms", i.runtime_client_ms);
-        let _ = writeln!(stderr, "  pipeline_wall:   {:>8.1}ms  (block_on total)", i.pipeline_wall_ms);
-        let _ = writeln!(stderr, "  cached_link_wall:{:>8.1}ms  (cached pkgs link)", i.cached_link_wall_ms);
-        let _ = writeln!(stderr, "  download (sum):  {:>8.1}ms  ({} wheels)", i.download_ms, i.download_count);
-        let _ = writeln!(stderr, "  extract (sum):   {:>8.1}ms  ({} wheels)", i.extract_ms, i.download_count);
-        let _ = writeln!(stderr, "  link (sum):      {:>8.1}ms  ({} packages)", i.link_ms, i.link_count);
+        let _ = writeln!(
+            stderr,
+            "  pipeline_wall:   {:>8.1}ms  (block_on total)",
+            i.pipeline_wall_ms
+        );
+        let _ = writeln!(
+            stderr,
+            "  cached_link_wall:{:>8.1}ms  (cached pkgs link)",
+            i.cached_link_wall_ms
+        );
+        let _ = writeln!(
+            stderr,
+            "  download (sum):  {:>8.1}ms  ({} wheels)",
+            i.download_ms, i.download_count
+        );
+        let _ = writeln!(
+            stderr,
+            "  extract (sum):   {:>8.1}ms  ({} wheels)",
+            i.extract_ms, i.download_count
+        );
+        let _ = writeln!(
+            stderr,
+            "  link (sum):      {:>8.1}ms  ({} packages)",
+            i.link_ms, i.link_count
+        );
         let _ = writeln!(stderr, "  eviction:        {:>8.1}ms", i.eviction_ms);
     }
 

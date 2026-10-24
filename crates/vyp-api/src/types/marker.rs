@@ -175,9 +175,7 @@ impl MarkerEnvironment {
     fn cache_dir() -> Option<std::path::PathBuf> {
         let dir = std::env::var("VYP_CACHE_DIR")
             .map(std::path::PathBuf::from)
-            .or_else(|_| {
-                std::env::var("XDG_CACHE_HOME").map(std::path::PathBuf::from)
-            })
+            .or_else(|_| std::env::var("XDG_CACHE_HOME").map(std::path::PathBuf::from))
             .unwrap_or_else(|_| {
                 let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
                 std::path::PathBuf::from(home).join(".cache")
@@ -365,19 +363,36 @@ impl MarkerTree {
             MarkerTree::Or(children) => children.iter().any(|c| c.evaluate(env, extras)),
             MarkerTree::Extra { name, equal } => {
                 let present = extras.iter().any(|e| e.eq_ignore_ascii_case(name));
-                if *equal { present } else { !present }
+                if *equal {
+                    present
+                } else {
+                    !present
+                }
             }
-            MarkerTree::VersionIn { key, versions, negated } => {
+            MarkerTree::VersionIn {
+                key,
+                versions,
+                negated,
+            } => {
                 let val = env.lookup(*key);
                 let found = versions.iter().any(|v| v == val);
-                if *negated { !found } else { found }
+                if *negated {
+                    !found
+                } else {
+                    found
+                }
             }
             MarkerTree::Compare { lhs, op, rhs } => eval_compare(lhs, *op, rhs, env),
         }
     }
 }
 
-fn eval_compare(lhs: &MarkerValue, op: MarkerOp, rhs: &MarkerValue, env: &MarkerEnvironment) -> bool {
+fn eval_compare(
+    lhs: &MarkerValue,
+    op: MarkerOp,
+    rhs: &MarkerValue,
+    env: &MarkerEnvironment,
+) -> bool {
     let lhs_str = resolve_value(lhs, env);
     let rhs_str = resolve_value(rhs, env);
 
@@ -398,8 +413,7 @@ fn eval_compare(lhs: &MarkerValue, op: MarkerOp, rhs: &MarkerValue, env: &Marker
     );
 
     if is_version {
-        if let (Some(l), Some(r)) = (parse_version_tuple(lhs_str), parse_version_tuple(rhs_str))
-        {
+        if let (Some(l), Some(r)) = (parse_version_tuple(lhs_str), parse_version_tuple(rhs_str)) {
             return compare_version_tuples(&l, op, &r);
         }
     }
@@ -447,13 +461,29 @@ fn compare_version_tuples(l: &[u32], op: MarkerOp, r: &[u32]) -> bool {
             l_ext >= r_ext && l_ext < upper_ext
         }
         MarkerOp::In => {
-            let r_str = r.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(".");
-            let l_str = l.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(".");
+            let r_str = r
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(".");
+            let l_str = l
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(".");
             r_str.contains(&l_str)
         }
         MarkerOp::NotIn => {
-            let r_str = r.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(".");
-            let l_str = l.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(".");
+            let r_str = r
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(".");
+            let l_str = l
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(".");
             !r_str.contains(&l_str)
         }
     }
@@ -1000,8 +1030,13 @@ mod tests {
     #[test]
     fn and_or_combinations() {
         let e = env();
-        assert!(!MarkerTree::parse("sys_platform == \"win32\" and extra == \"socks\"").evaluate(&e, &[]));
-        assert!(MarkerTree::parse("python_version >= \"3.8\" or extra == \"socks\"").evaluate(&e, &[]));
+        assert!(
+            !MarkerTree::parse("sys_platform == \"win32\" and extra == \"socks\"")
+                .evaluate(&e, &[])
+        );
+        assert!(
+            MarkerTree::parse("python_version >= \"3.8\" or extra == \"socks\"").evaluate(&e, &[])
+        );
     }
 
     #[test]
@@ -1017,9 +1052,7 @@ mod tests {
         assert!(
             MarkerTree::parse("platform_python_implementation == \"CPython\"").evaluate(&e, &[])
         );
-        assert!(
-            !MarkerTree::parse("platform_python_implementation == \"PyPy\"").evaluate(&e, &[])
-        );
+        assert!(!MarkerTree::parse("platform_python_implementation == \"PyPy\"").evaluate(&e, &[]));
     }
 
     #[test]
@@ -1052,10 +1085,9 @@ mod tests {
         )
         .evaluate(&e, &[]));
         assert!(!MarkerTree::parse("extra == \"h2\"").evaluate(&e, &[]));
-        assert!(!MarkerTree::parse(
-            "python_version < \"3.14\" and extra == \"zstd\""
-        )
-        .evaluate(&e, &[]));
+        assert!(
+            !MarkerTree::parse("python_version < \"3.14\" and extra == \"zstd\"").evaluate(&e, &[])
+        );
     }
 
     #[test]
@@ -1104,7 +1136,7 @@ mod tests {
     fn complex_nested() {
         let e = env();
         let t = MarkerTree::parse(
-            "(python_version >= \"3.8\" and os_name == \"posix\") or (extra == \"dev\")"
+            "(python_version >= \"3.8\" and os_name == \"posix\") or (extra == \"dev\")",
         );
         // On macOS with no extras: first branch is true (3.12 >= 3.8 and posix)
         if cfg!(target_os = "macos") {
@@ -1129,12 +1161,21 @@ mod tests {
         let marker = r#"platform_machine == "aarch64" or (platform_machine == "ppc64le" or (platform_machine == "x86_64" or (platform_machine == "amd64" or (platform_machine == "AMD64" or (platform_machine == "win32" or platform_machine == "WIN32")))))"#;
         let tree = MarkerTree::parse(marker);
         eprintln!("Parsed greenlet marker: {:?}", tree);
-        assert!(!tree.evaluate(&e, &[]), "greenlet should be excluded on arm64");
+        assert!(
+            !tree.evaluate(&e, &[]),
+            "greenlet should be excluded on arm64"
+        );
 
         e.platform_machine = "x86_64".to_string();
-        assert!(tree.evaluate(&e, &[]), "greenlet should be included on x86_64");
+        assert!(
+            tree.evaluate(&e, &[]),
+            "greenlet should be included on x86_64"
+        );
 
         e.platform_machine = "aarch64".to_string();
-        assert!(tree.evaluate(&e, &[]), "greenlet should be included on aarch64");
+        assert!(
+            tree.evaluate(&e, &[]),
+            "greenlet should be included on aarch64"
+        );
     }
 }

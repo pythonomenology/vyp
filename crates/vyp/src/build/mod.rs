@@ -48,16 +48,25 @@ impl BuildSystem {
             if source.join("setup.py").exists() {
                 return Ok(defaults);
             }
-            return Err(miette::miette!("{} has no pyproject.toml or setup.py", source.display()));
+            return Err(miette::miette!(
+                "{} has no pyproject.toml or setup.py",
+                source.display()
+            ));
         };
         let doc: toml::Value = toml::from_str(&content)
             .map_err(|e| miette::miette!("Failed to parse {}: {}", pyproject.display(), e))?;
-        let Some(table) = doc.get("build-system") else { return Ok(defaults) };
+        let Some(table) = doc.get("build-system") else {
+            return Ok(defaults);
+        };
         let strings = |key: &str| -> Vec<String> {
             table
                 .get(key)
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default()
         };
         // PEP 517: no build-backend means the legacy setuptools backend.
@@ -68,7 +77,11 @@ impl BuildSystem {
                 backend_path: strings("backend-path"),
             }),
             None => Ok(Self {
-                requires: if table.get("requires").is_some() { strings("requires") } else { defaults.requires },
+                requires: if table.get("requires").is_some() {
+                    strings("requires")
+                } else {
+                    defaults.requires
+                },
                 ..defaults
             }),
         }
@@ -86,17 +99,28 @@ pub struct Frontend {
 impl Frontend {
     /// A frontend building for the interpreter at `python` (a venv's or a
     /// base interpreter); build environments use its base interpreter.
-    pub fn for_python(python: &Path, index_url: &str, client: reqwest::Client) -> miette::Result<Self> {
+    pub fn for_python(
+        python: &Path,
+        index_url: &str,
+        client: reqwest::Client,
+    ) -> miette::Result<Self> {
         let interp = python::probe(python)
             .ok_or_else(|| miette::miette!("Cannot run {} to build packages", python.display()))?;
         let base = if interp.is_venv {
             python::probe(&interp.base_executable).ok_or_else(|| {
-                miette::miette!("Base interpreter {} doesn't run", interp.base_executable.display())
+                miette::miette!(
+                    "Base interpreter {} doesn't run",
+                    interp.base_executable.display()
+                )
             })?
         } else {
             interp
         };
-        Ok(Self { base, index_url: index_url.to_string(), client })
+        Ok(Self {
+            base,
+            index_url: index_url.to_string(),
+            client,
+        })
     }
 
     /// Identifies the interpreter builds target, for caching built wheels.
@@ -110,7 +134,13 @@ impl Frontend {
         sorted.sort();
         sorted.dedup();
         let key = python::hex_sha256(
-            format!("{}\n{}\n{}", self.base.executable.display(), self.index_url, sorted.join("\n")).as_bytes(),
+            format!(
+                "{}\n{}\n{}",
+                self.base.executable.display(),
+                self.index_url,
+                sorted.join("\n")
+            )
+            .as_bytes(),
         );
         let dir = cache_base_dir().join("build-envs").join(&key[..24]);
         let done = dir.join(".vyp-complete");
@@ -120,11 +150,21 @@ impl Frontend {
             }
         }
 
-        let layout = env::create(&dir, &self.base, &VenvOptions { clear: true, ..Default::default() })?;
+        let layout = env::create(
+            &dir,
+            &self.base,
+            &VenvOptions {
+                clear: true,
+                ..Default::default()
+            },
+        )?;
         if !sorted.is_empty() {
             let reqs: Vec<Requirement> = sorted
                 .iter()
-                .map(|r| r.parse().map_err(|e| miette::miette!("Invalid build requirement '{}': {}", r, e)))
+                .map(|r| {
+                    r.parse()
+                        .map_err(|e| miette::miette!("Invalid build requirement '{}': {}", r, e))
+                })
                 .collect::<miette::Result<_>>()?;
             let marker_env = MarkerEnvironment::detect_with(&layout.python_exe.to_string_lossy());
             let provider = vyp_index::PyPIMetadataProvider::with_name_env_client(
@@ -139,19 +179,33 @@ impl Frontend {
                 .with_provider(Box::new(provider))
                 .add_dependencies(reqs)
                 .resolve()
-                .map_err(|e| miette::miette!("Cannot resolve build requirements {}:\n{}", sorted.join(", "), e))?;
+                .map_err(|e| {
+                    miette::miette!(
+                        "Cannot resolve build requirements {}:\n{}",
+                        sorted.join(", "),
+                        e
+                    )
+                })?;
             let lock = LockFile::from_resolution(&result);
-            install_lockfile(&lock, &layout, &InstallOptions {
-                default_index: Some(self.index_url.clone()),
-                client: Some(self.client.clone()),
-                // Build tools such as setuptools ship startup files; build
-                // environments are disposable and never run user code.
-                startup: StartupPolicy { mode: StartupMode::Allow, ..Default::default() },
-                quiet: true,
-                ..Default::default()
-            })?;
+            install_lockfile(
+                &lock,
+                &layout,
+                &InstallOptions {
+                    default_index: Some(self.index_url.clone()),
+                    client: Some(self.client.clone()),
+                    // Build tools such as setuptools ship startup files; build
+                    // environments are disposable and never run user code.
+                    startup: StartupPolicy {
+                        mode: StartupMode::Allow,
+                        ..Default::default()
+                    },
+                    quiet: true,
+                    ..Default::default()
+                },
+            )?;
         }
-        std::fs::write(&done, b"").map_err(|e| miette::miette!("Failed to write {}: {}", done.display(), e))?;
+        std::fs::write(&done, b"")
+            .map_err(|e| miette::miette!("Failed to write {}: {}", done.display(), e))?;
         Ok(layout)
     }
 
@@ -167,7 +221,8 @@ impl Frontend {
         let work = scratch_dir("hook")?;
         let shim = work.join("backend_shim.py");
         let result_path = work.join("result.json");
-        std::fs::write(&shim, SHIM).map_err(|e| miette::miette!("Failed to write build shim: {}", e))?;
+        std::fs::write(&shim, SHIM)
+            .map_err(|e| miette::miette!("Failed to write build shim: {}", e))?;
 
         let verbose = std::env::var("VYP_BUILD_VERBOSE").is_ok_and(|v| v == "1");
         let output = std::process::Command::new(&env.python_exe)
@@ -181,8 +236,16 @@ impl Frontend {
             .env("PYTHONNOUSERSITE", "1")
             .env_remove("PYTHONPATH")
             .stdin(std::process::Stdio::null())
-            .stdout(if verbose { std::process::Stdio::inherit() } else { std::process::Stdio::piped() })
-            .stderr(if verbose { std::process::Stdio::inherit() } else { std::process::Stdio::piped() })
+            .stdout(if verbose {
+                std::process::Stdio::inherit()
+            } else {
+                std::process::Stdio::piped()
+            })
+            .stderr(if verbose {
+                std::process::Stdio::inherit()
+            } else {
+                std::process::Stdio::piped()
+            })
             .output()
             .map_err(|e| miette::miette!("Failed to run {}: {}", env.python_exe.display(), e))?;
 
@@ -215,11 +278,26 @@ impl Frontend {
     }
 
     /// The build environment with the backend's dynamic requirements added.
-    fn prepared_env(&self, source: &Path, system: &BuildSystem, editable: bool) -> miette::Result<VenvLayout> {
+    fn prepared_env(
+        &self,
+        source: &Path,
+        system: &BuildSystem,
+        editable: bool,
+    ) -> miette::Result<VenvLayout> {
         let env = self.env_for(&system.requires)?;
-        let get_requires = if editable { "get_requires_for_build_editable" } else { "get_requires_for_build_wheel" };
+        let get_requires = if editable {
+            "get_requires_for_build_editable"
+        } else {
+            "get_requires_for_build_wheel"
+        };
         let extra: Vec<String> = self
-            .hook(&env, source, system, get_requires, serde_json::json!({"args": [{}]}))?
+            .hook(
+                &env,
+                source,
+                system,
+                get_requires,
+                serde_json::json!({"args": [{}]}),
+            )?
             .and_then(|v| v.as_array().cloned())
             .unwrap_or_default()
             .into_iter()
@@ -276,9 +354,19 @@ impl Frontend {
     ) -> miette::Result<PathBuf> {
         std::fs::create_dir_all(out_dir)
             .map_err(|e| miette::miette!("Failed to create {}: {}", out_dir.display(), e))?;
-        let hook = if editable { "build_editable" } else { "build_wheel" };
+        let hook = if editable {
+            "build_editable"
+        } else {
+            "build_wheel"
+        };
         let name = self
-            .hook(env, source, system, hook, serde_json::json!({"args": [out_dir.to_string_lossy(), {}]}))?
+            .hook(
+                env,
+                source,
+                system,
+                hook,
+                serde_json::json!({"args": [out_dir.to_string_lossy(), {}]}),
+            )?
             .ok_or_else(|| {
                 if editable {
                     miette::miette!(
@@ -289,17 +377,23 @@ impl Frontend {
                     miette::miette!("Build backend {} has no build_wheel hook", system.backend)
                 }
             })?;
-        let name = name.as_str().ok_or_else(|| miette::miette!("Backend returned no wheel name"))?;
+        let name = name
+            .as_str()
+            .ok_or_else(|| miette::miette!("Backend returned no wheel name"))?;
         Ok(out_dir.join(name))
     }
 }
 
 /// METADATA from a built wheel.
 pub fn read_wheel_metadata(wheel: &Path) -> miette::Result<String> {
-    let file = std::fs::File::open(wheel).map_err(|e| miette::miette!("Cannot open {}: {}", wheel.display(), e))?;
-    let mut zip = zip::ZipArchive::new(file).map_err(|e| miette::miette!("Bad wheel {}: {}", wheel.display(), e))?;
+    let file = std::fs::File::open(wheel)
+        .map_err(|e| miette::miette!("Cannot open {}: {}", wheel.display(), e))?;
+    let mut zip = zip::ZipArchive::new(file)
+        .map_err(|e| miette::miette!("Bad wheel {}: {}", wheel.display(), e))?;
     for i in 0..zip.len() {
-        let mut entry = zip.by_index(i).map_err(|e| miette::miette!("Bad wheel {}: {}", wheel.display(), e))?;
+        let mut entry = zip
+            .by_index(i)
+            .map_err(|e| miette::miette!("Bad wheel {}: {}", wheel.display(), e))?;
         let name = entry.name().to_string();
         if name.ends_with(".dist-info/METADATA") && name.matches('/').count() == 1 {
             let mut s = String::new();
@@ -314,17 +408,22 @@ pub fn read_wheel_metadata(wheel: &Path) -> miette::Result<String> {
 
 /// Unpack an sdist into the cache and return its source tree.
 pub fn unpack_sdist(path: &Path) -> miette::Result<PathBuf> {
-    let bytes = std::fs::read(path).map_err(|e| miette::miette!("Cannot read {}: {}", path.display(), e))?;
+    let bytes = std::fs::read(path)
+        .map_err(|e| miette::miette!("Cannot read {}: {}", path.display(), e))?;
     let key = python::hex_sha256(&bytes);
     let dest = cache_base_dir().join("sdist-src").join(&key[..24]);
     if !dest.join(".vyp-complete").exists() {
         let _ = std::fs::remove_dir_all(&dest);
-        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         if name.ends_with(".zip") {
             let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes))
                 .map_err(|e| miette::miette!("Bad sdist {}: {}", name, e))?;
             // `extract` refuses entries that escape the destination.
-            zip.extract(&dest).map_err(|e| miette::miette!("Cannot unpack {}: {}", name, e))?;
+            zip.extract(&dest)
+                .map_err(|e| miette::miette!("Cannot unpack {}: {}", name, e))?;
         } else {
             crate::python::download::unpack_tar_gz(&bytes, &dest)?;
         }
@@ -338,7 +437,10 @@ pub fn unpack_sdist(path: &Path) -> miette::Result<PathBuf> {
         .map(|e| e.path());
     match (dirs.next(), dirs.next()) {
         (Some(dir), None) => Ok(dir),
-        _ => Err(miette::miette!("Unexpected layout in sdist {}", path.display())),
+        _ => Err(miette::miette!(
+            "Unexpected layout in sdist {}",
+            path.display()
+        )),
     }
 }
 
@@ -356,7 +458,8 @@ pub fn scratch_dir(label: &str) -> miette::Result<PathBuf> {
         nanos,
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::create_dir_all(&dir).map_err(|e| miette::miette!("Failed to create {}: {}", dir.display(), e))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| miette::miette!("Failed to create {}: {}", dir.display(), e))?;
     Ok(dir)
 }
 
@@ -384,7 +487,9 @@ mod tests {
     #[test]
     fn reads_build_system_with_pep517_defaults() {
         let explicit = tree(
-            Some("[build-system]\nrequires = [\"hatchling\"]\nbuild-backend = \"hatchling.build\"\n"),
+            Some(
+                "[build-system]\nrequires = [\"hatchling\"]\nbuild-backend = \"hatchling.build\"\n",
+            ),
             false,
         );
         let bs = BuildSystem::read(&explicit).unwrap();
@@ -396,7 +501,10 @@ mod tests {
         assert_eq!(bs.backend, DEFAULT_BACKEND);
         assert_eq!(bs.requires, vec!["setuptools>=40.8.0"]);
 
-        let requires_only = tree(Some("[build-system]\nrequires = [\"setuptools>=61\", \"wheel\"]\n"), false);
+        let requires_only = tree(
+            Some("[build-system]\nrequires = [\"setuptools>=61\", \"wheel\"]\n"),
+            false,
+        );
         let bs = BuildSystem::read(&requires_only).unwrap();
         assert_eq!(bs.backend, DEFAULT_BACKEND);
         assert_eq!(bs.requires, vec!["setuptools>=61", "wheel"]);

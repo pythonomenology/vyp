@@ -1,19 +1,19 @@
 pub mod add;
 pub mod cache_cmd;
 pub mod common;
-pub mod resolve;
-pub mod lock;
-pub mod explain;
-pub mod diff;
 pub mod conflict;
+pub mod diff;
+pub mod explain;
+pub mod install;
+pub mod lock;
 pub mod override_cmd;
 pub mod plugin_cmd;
-pub mod install;
-pub mod uninstall;
-pub mod sync;
-pub mod venv_cmd;
 pub mod python_cmd;
+pub mod resolve;
 pub mod run;
+pub mod sync;
+pub mod uninstall;
+pub mod venv_cmd;
 
 use clap::Subcommand;
 

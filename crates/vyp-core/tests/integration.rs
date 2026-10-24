@@ -1,9 +1,9 @@
 use vyp_api::{
-    VypVersion, ComparisonOp, ConflictDeclaration, ConflictSet, DependencyOverride,
-    Requirement, SubstitutionSet,
+    ComparisonOp, ConflictDeclaration, ConflictSet, DependencyOverride, Requirement,
+    SubstitutionSet, VypVersion,
 };
+use vyp_core::{PreReleasePolicy, ResolutionStrategy, ResolverBuilder, VypError};
 use vyp_index::OfflineMetadataProvider;
-use vyp_core::{VypError, PreReleasePolicy, ResolutionStrategy, ResolverBuilder};
 
 fn v(major: u32, minor: u32, patch: u32) -> VypVersion {
     VypVersion::from_parts(major, minor, patch)
@@ -99,16 +99,8 @@ fn test_deep_transitive_conflict_propagation() {
         vec![req_gte("numpy", v(1, 0, 0))],
         core_conflicts,
     );
-    provider.add_package(
-        "pkg-mid",
-        v(1, 0, 0),
-        vec![req_gte("pkg-core", v(1, 0, 0))],
-    );
-    provider.add_package(
-        "pkg-top",
-        v(1, 0, 0),
-        vec![req_gte("pkg-mid", v(1, 0, 0))],
-    );
+    provider.add_package("pkg-mid", v(1, 0, 0), vec![req_gte("pkg-core", v(1, 0, 0))]);
+    provider.add_package("pkg-top", v(1, 0, 0), vec![req_gte("pkg-mid", v(1, 0, 0))]);
 
     let result = ResolverBuilder::new()
         .with_provider(Box::new(provider))
@@ -192,9 +184,7 @@ fn test_resolver_with_exact_pin_override() {
     provider.add_package("numpy", v(1, 26, 0), vec![]);
     provider.add_package("numpy", v(2, 0, 0), vec![]);
 
-    let overrides = vec![
-        DependencyOverride::new("numpy", "==1.24.0"),
-    ];
+    let overrides = vec![DependencyOverride::new("numpy", "==1.24.0")];
 
     let result = ResolverBuilder::new()
         .with_provider(Box::new(provider))
@@ -266,8 +256,14 @@ prefer = "opencv-python-headless"
     let vyp = parsed.get("tool").unwrap().get("vyp").unwrap();
     let overrides = vyp.get("overrides").unwrap().as_array().unwrap();
     assert_eq!(overrides.len(), 2);
-    assert_eq!(overrides[0].get("package").unwrap().as_str().unwrap(), "numpy");
-    assert_eq!(overrides[1].get("constraint").unwrap().as_str().unwrap(), "==1.11.0");
+    assert_eq!(
+        overrides[0].get("package").unwrap().as_str().unwrap(),
+        "numpy"
+    );
+    assert_eq!(
+        overrides[1].get("constraint").unwrap().as_str().unwrap(),
+        "==1.11.0"
+    );
     assert!(overrides[1].get("transitive").unwrap().as_bool().unwrap());
 }
 
@@ -301,14 +297,14 @@ torch = [
         vyp.get("index-url").unwrap().as_str().unwrap(),
         "https://my-registry.example.com/simple"
     );
-    assert_eq!(
-        vyp.get("torch-backend").unwrap().as_str().unwrap(),
-        "cu128"
-    );
+    assert_eq!(vyp.get("torch-backend").unwrap().as_str().unwrap(), "cu128");
 
     let extras = vyp.get("extra-index").unwrap().as_array().unwrap();
     assert_eq!(extras.len(), 1);
-    assert_eq!(extras[0].get("name").unwrap().as_str().unwrap(), "pytorch-cu128");
+    assert_eq!(
+        extras[0].get("name").unwrap().as_str().unwrap(),
+        "pytorch-cu128"
+    );
     assert!(extras[0].get("explicit").unwrap().as_bool().unwrap());
 
     let sources = vyp.get("sources").unwrap();
@@ -409,10 +405,7 @@ fn test_provenance_requested_by_tracking() {
     // 'mid' should be requested_by 'top'
     let mid_record = result.provenance.records.get("mid").unwrap();
     assert!(
-        mid_record
-            .requested_by
-            .iter()
-            .any(|r| r.contains("top")),
+        mid_record.requested_by.iter().any(|r| r.contains("top")),
         "mid should be requested by top, got: {:?}",
         mid_record.requested_by
     );
@@ -420,10 +413,7 @@ fn test_provenance_requested_by_tracking() {
     // 'bottom' should be requested_by 'mid'
     let bottom_record = result.provenance.records.get("bottom").unwrap();
     assert!(
-        bottom_record
-            .requested_by
-            .iter()
-            .any(|r| r.contains("mid")),
+        bottom_record.requested_by.iter().any(|r| r.contains("mid")),
         "bottom should be requested by mid, got: {:?}",
         bottom_record.requested_by
     );
@@ -469,13 +459,11 @@ fn test_substitution_excludes_non_preferred() {
     provider.add_package("opencv_python", v(4, 9, 0), vec![]);
     provider.add_package("opencv_python_headless", v(4, 9, 0), vec![]);
 
-    let subs = vec![
-        SubstitutionSet::new(
-            "opencv",
-            vec!["opencv_python".into(), "opencv_python_headless".into()],
-        )
-        .with_preference("opencv_python_headless"),
-    ];
+    let subs = vec![SubstitutionSet::new(
+        "opencv",
+        vec!["opencv_python".into(), "opencv_python_headless".into()],
+    )
+    .with_preference("opencv_python_headless")];
 
     let result = ResolverBuilder::new()
         .with_provider(Box::new(provider))
@@ -513,14 +501,11 @@ fn test_plugin_loader_builtin_registration() {
 
 #[test]
 fn test_cache_lru_eviction_integration() {
-    use vyp_api::{VypPackage, ConflictSet};
     use vyp_api::traits::metadata_provider::PackageMetadata;
+    use vyp_api::{ConflictSet, VypPackage};
     use vyp_index::MetadataCache;
 
-    let dir = std::env::temp_dir().join(format!(
-        "vyp-cache-integration-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("vyp-cache-integration-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
     let mut cache = MetadataCache::with_max_size(dir.clone(), 500);
@@ -584,7 +569,9 @@ fn test_version_local_segment_ordering() {
 
 #[test]
 fn test_url_requirement_parsing() {
-    let req: Requirement = "mypackage @ https://example.com/pkg.tar.gz".parse().unwrap();
+    let req: Requirement = "mypackage @ https://example.com/pkg.tar.gz"
+        .parse()
+        .unwrap();
     assert!(req.is_url());
     assert_eq!(req.url.as_deref(), Some("https://example.com/pkg.tar.gz"));
     assert!(req.constraints.is_empty());
@@ -658,7 +645,11 @@ fn test_named_index_scopes_to_transitive_closure() {
     default_idx.add_package("torch", v(1, 0, 0), vec![]); // older mirror
     default_idx.add_package("sympy", v(1, 12, 0), vec![]);
     default_idx.add_package("filelock", v(3, 13, 0), vec![]);
-    default_idx.add_package("requests", v(2, 31, 0), vec![req_gte("filelock", v(3, 0, 0))]);
+    default_idx.add_package(
+        "requests",
+        v(2, 31, 0),
+        vec![req_gte("filelock", v(3, 0, 0))],
+    );
 
     let router = IndexRouter::new();
     router.seed_index("torch", &["torch".to_string()]);
@@ -688,7 +679,13 @@ fn test_named_index_scopes_to_transitive_closure() {
     let served = served.lock().unwrap();
     // (1) torch and its transitive dep sympy were served by the named index.
     assert!(served.iter().any(|p| p == "torch"), "torch served by index");
-    assert!(served.iter().any(|p| p == "sympy"), "transitive sympy served by index");
+    assert!(
+        served.iter().any(|p| p == "sympy"),
+        "transitive sympy served by index"
+    );
     // (2) the unrelated top-level dependency was NOT served by the named index.
-    assert!(!served.iter().any(|p| p == "requests"), "requests must not route to torch index");
+    assert!(
+        !served.iter().any(|p| p == "requests"),
+        "requests must not route to torch index"
+    );
 }

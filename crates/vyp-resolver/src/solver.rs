@@ -145,7 +145,12 @@ impl Incompatibility {
         }
     }
 
-    pub fn from_dependency(pkg: PackageId, version: &VypVersion, dep: PackageId, dep_range: &VS) -> Self {
+    pub fn from_dependency(
+        pkg: PackageId,
+        version: &VypVersion,
+        dep: PackageId,
+        dep_range: &VS,
+    ) -> Self {
         let mut terms = BTreeMap::new();
         terms.insert(pkg, Term::Positive(Ranges::singleton(version.clone())));
         terms.insert(dep, Term::Negative(dep_range.clone()));
@@ -286,12 +291,15 @@ impl PartialSolution {
         let gi = self.next_global_index;
         self.next_global_index += 1;
 
-        let pa = self.assignments.entry(pkg).or_insert_with(|| PackageAssignment {
-            state: AssignmentState::Derivations(Term::any()),
-            derivations: Vec::new(),
-            smallest_dl: dl,
-            highest_dl: dl,
-        });
+        let pa = self
+            .assignments
+            .entry(pkg)
+            .or_insert_with(|| PackageAssignment {
+                state: AssignmentState::Derivations(Term::any()),
+                derivations: Vec::new(),
+                smallest_dl: dl,
+                highest_dl: dl,
+            });
 
         let accumulated = match &pa.state {
             AssignmentState::Derivations(current) => current.intersection(&new_term),
@@ -311,9 +319,7 @@ impl PartialSolution {
     pub fn term_for(&self, pkg: PackageId) -> Term {
         match self.assignments.get(&pkg) {
             Some(pa) => match &pa.state {
-                AssignmentState::Decision(_, v, _) => {
-                    Term::Positive(Ranges::singleton(v.clone()))
-                }
+                AssignmentState::Decision(_, v, _) => Term::Positive(Ranges::singleton(v.clone())),
                 AssignmentState::Derivations(t) => t.clone(),
             },
             None => Term::any(),
@@ -344,7 +350,11 @@ impl PartialSolution {
             if pa.highest_dl <= target_dl {
                 continue;
             }
-            while pa.derivations.last().is_some_and(|d| d.decision_level > target_dl) {
+            while pa
+                .derivations
+                .last()
+                .is_some_and(|d| d.decision_level > target_dl)
+            {
                 pa.derivations.pop();
             }
             if let Some(last) = pa.derivations.last() {
@@ -386,10 +396,7 @@ impl PartialSolution {
         solution
     }
 
-    pub fn satisfier_search(
-        &self,
-        incompat: &Incompatibility,
-    ) -> SatisfierInfo {
+    pub fn satisfier_search(&self, incompat: &Incompatibility) -> SatisfierInfo {
         let mut satisfier_pkg = PackageId(0);
         let mut satisfier_gi: u32 = 0;
         let mut satisfier_dl: u32 = 0;
@@ -595,7 +602,9 @@ pub enum SolverError {
 impl fmt::Display for SolverError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SolverError::NoSolution { derivation_tree, .. } => write!(f, "{}", derivation_tree),
+            SolverError::NoSolution {
+                derivation_tree, ..
+            } => write!(f, "{}", derivation_tree),
             SolverError::Cancelled => write!(f, "resolution cancelled"),
         }
     }
@@ -761,7 +770,9 @@ impl SolverState {
     /// analysis remains valid); only their watch entries are dropped.
     fn gc_learned_watches(&mut self) {
         while self.learned_watched.len() > MAX_LEARNED_WATCHED {
-            let Some(id) = self.learned_watched.pop_front() else { break };
+            let Some(id) = self.learned_watched.pop_front() else {
+                break;
+            };
             let (a, b) = self.watched[id.0 as usize];
             self.remove_watch(a, id);
             if b != a {
@@ -815,7 +826,10 @@ impl SolverState {
     // Unit propagation
     // -----------------------------------------------------------------------
 
-    pub fn unit_propagation(&mut self, start: PackageId) -> Result<Vec<(PackageId, IncompatId)>, SolverError> {
+    pub fn unit_propagation(
+        &mut self,
+        start: PackageId,
+    ) -> Result<Vec<(PackageId, IncompatId)>, SolverError> {
         let mut satisfier_causes = Vec::new();
         let mut buffer = vec![start];
         let mut buffer_set = HashSet::new();
@@ -826,8 +840,7 @@ impl SolverState {
 
             // Examine only incompatibilities watching `current`. Snapshot the
             // list because moving watches mutates it during iteration.
-            let watchers: Vec<IncompatId> =
-                self.watches.get(&current).cloned().unwrap_or_default();
+            let watchers: Vec<IncompatId> = self.watches.get(&current).cloned().unwrap_or_default();
 
             let mut conflict_id = None;
 
@@ -849,7 +862,8 @@ impl SolverState {
                             .get(&pkg_almost)
                             .unwrap()
                             .negate();
-                        self.partial_solution.add_derivation(pkg_almost, iid, negate);
+                        self.partial_solution
+                            .add_derivation(pkg_almost, iid, negate);
                         // Keep watching the asserted package so a later
                         // backtrack re-examines this incompatibility.
                         self.ensure_watched(iid, pkg_almost);
@@ -867,7 +881,10 @@ impl SolverState {
 
             if let Some(iid) = conflict_id {
                 match self.conflict_resolution(iid, &mut satisfier_causes)? {
-                    ConflictOutcome::Backtracked { package, root_cause } => {
+                    ConflictOutcome::Backtracked {
+                        package,
+                        root_cause,
+                    } => {
                         buffer.clear();
                         buffer_set.clear();
                         buffer.push(package);
@@ -877,7 +894,8 @@ impl SolverState {
                             .get(&package)
                             .unwrap()
                             .negate();
-                        self.partial_solution.add_derivation(package, root_cause, negate);
+                        self.partial_solution
+                            .add_derivation(package, root_cause, negate);
                         self.ensure_watched(root_cause, package);
 
                         // A backtrack to decision level 0 removes the root
@@ -933,7 +951,12 @@ impl SolverState {
     // Conflict resolution
     // -----------------------------------------------------------------------
 
-    fn prior_cause_from_store(&self, a: IncompatId, b: IncompatId, pivot: PackageId) -> Incompatibility {
+    fn prior_cause_from_store(
+        &self,
+        a: IncompatId,
+        b: IncompatId,
+        pivot: PackageId,
+    ) -> Incompatibility {
         let mut prior = Incompatibility::prior_cause(
             &self.store[a.0 as usize],
             &self.store[b.0 as usize],
@@ -1088,7 +1111,12 @@ impl SolverState {
             }
             IncompatKind::NoVersions(pkg, range) => {
                 let name = self.package_name(*pkg);
-                lines.push(format!("{}no versions of {} match {}", indent, name, format_range(range)));
+                lines.push(format!(
+                    "{}no versions of {} match {}",
+                    indent,
+                    name,
+                    format_range(range)
+                ));
             }
             IncompatKind::Dependency(from, to) => {
                 let from_name = self.package_name(*from);
@@ -1108,9 +1136,7 @@ impl SolverState {
                 let terms_desc: Vec<String> = incompat
                     .package_terms
                     .iter()
-                    .map(|(pkg, term)| {
-                        format!("{} {}", self.package_name(*pkg), format_term(term))
-                    })
+                    .map(|(pkg, term)| format!("{} {}", self.package_name(*pkg), format_term(term)))
                     .collect();
                 lines.push(format!("{}So, {}", indent, terms_desc.join(" and ")));
             }

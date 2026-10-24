@@ -1,6 +1,6 @@
-use vyp_api::DependencyOverride;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use vyp_api::DependencyOverride;
 
 /// A `vyp-overrides.toml` file that libraries ship alongside their
 /// distribution. Contains transitive dependency overrides, enabling the

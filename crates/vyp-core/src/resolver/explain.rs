@@ -65,7 +65,11 @@ impl std::fmt::Display for FailureExplanation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "CONFLICT: Cannot resolve {}", self.contested_package)?;
         for (pkg, range) in &self.requirements {
-            writeln!(f, "  - {} requires {} {}", pkg, self.contested_package, range)?;
+            writeln!(
+                f,
+                "  - {} requires {} {}",
+                pkg, self.contested_package, range
+            )?;
         }
         writeln!(f)?;
         writeln!(f, "Suggestions:")?;

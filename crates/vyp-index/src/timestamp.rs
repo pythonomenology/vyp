@@ -61,7 +61,10 @@ pub fn parse_rfc3339(s: &str) -> Option<i64> {
         let (clock, off) = time.split_at(i);
         let sign = if off.starts_with('-') { -1 } else { 1 };
         let (oh, om) = off[1..].split_once(':').unwrap_or((&off[1..], "0"));
-        (clock, sign * (oh.parse::<i64>().ok()? * 3600 + om.parse::<i64>().ok()? * 60))
+        (
+            clock,
+            sign * (oh.parse::<i64>().ok()? * 3600 + om.parse::<i64>().ok()? * 60),
+        )
     } else {
         (time, 0)
     };
@@ -82,7 +85,15 @@ pub fn parse_rfc3339(s: &str) -> Option<i64> {
 pub fn format_rfc3339(secs: i64) -> String {
     let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
     let rem = secs.rem_euclid(86_400);
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m, d, rem / 3600, (rem % 3600) / 60, rem % 60)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        y,
+        m,
+        d,
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
 }
 
 /// Parse `P7D`, `PT12H`, `P1W`, `7 days`, `2 weeks`, `24 hours`, `30 minutes`.
@@ -141,8 +152,14 @@ mod tests {
     #[test]
     fn parses_upload_times() {
         assert_eq!(parse_rfc3339("1970-01-01T00:00:00Z"), Some(0));
-        assert_eq!(parse_rfc3339("2024-01-15T09:30:12.345678Z"), Some(1_705_311_012));
-        assert_eq!(parse_rfc3339("2024-01-15T10:30:12+01:00"), Some(1_705_311_012));
+        assert_eq!(
+            parse_rfc3339("2024-01-15T09:30:12.345678Z"),
+            Some(1_705_311_012)
+        );
+        assert_eq!(
+            parse_rfc3339("2024-01-15T10:30:12+01:00"),
+            Some(1_705_311_012)
+        );
         assert_eq!(parse_rfc3339("2024-01-15"), Some(1_705_276_800));
         assert_eq!(parse_rfc3339("2024-13-01"), None);
         assert_eq!(parse_rfc3339("yesterday"), None);

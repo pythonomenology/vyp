@@ -1,9 +1,9 @@
-use vyp_api::{DependencyOverride, MarkerEnvironment, Requirement, SubstitutionSet};
-use vyp_core::IndexRouter;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use vyp_api::{DependencyOverride, MarkerEnvironment, Requirement, SubstitutionSet};
+use vyp_core::IndexRouter;
 
 /// A named package index.
 #[derive(Debug, Clone)]
@@ -119,7 +119,6 @@ impl InheritOverrides {
         }
     }
 }
-
 
 impl Default for VypConfig {
     fn default() -> Self {
@@ -359,10 +358,16 @@ impl VypConfig {
             .chain(self.dependency_groups.values().flatten());
         let mut direct = Vec::new();
         for dep in all_deps {
-            let Ok(req) = dep.parse::<Requirement>() else { continue };
+            let Ok(req) = dep.parse::<Requirement>() else {
+                continue;
+            };
             let Some(url) = &req.url else { continue };
             let name = req.package.name().to_string();
-            if self.local_sources.iter().any(|(n, _)| vyp_api::normalize_package_name(n) == name) {
+            if self
+                .local_sources
+                .iter()
+                .any(|(n, _)| vyp_api::normalize_package_name(n) == name)
+            {
                 continue;
             }
             if let Some(source) = LocalSource::from_direct_reference(url, project_dir) {
@@ -539,7 +544,10 @@ impl VypConfig {
                     ))
                 }
             };
-            config.exclude_newer.packages.insert(vyp_api::normalize_package_name(&pkg), cutoff);
+            config
+                .exclude_newer
+                .packages
+                .insert(vyp_api::normalize_package_name(&pkg), cutoff);
         }
         config.pre_release_packages = vyp.pre_release_packages;
         config.sdists = match vyp.sdists.as_deref() {
@@ -553,8 +561,11 @@ impl VypConfig {
                 ))
             }
         };
-        config.startup_files.allowed =
-            vyp.allow_startup_files.iter().map(|n| vyp_api::normalize_package_name(n)).collect();
+        config.startup_files.allowed = vyp
+            .allow_startup_files
+            .iter()
+            .map(|n| vyp_api::normalize_package_name(n))
+            .collect();
 
         // Errata feeds and inherited overrides
         config.errata = vyp.errata;
@@ -562,7 +573,10 @@ impl VypConfig {
             None | Some(RawInheritOverrides::Enabled(true)) => InheritOverrides::All,
             Some(RawInheritOverrides::Enabled(false)) => InheritOverrides::None,
             Some(RawInheritOverrides::Only(names)) => InheritOverrides::Only(
-                names.iter().map(|n| vyp_api::normalize_package_name(n)).collect(),
+                names
+                    .iter()
+                    .map(|n| vyp_api::normalize_package_name(n))
+                    .collect(),
             ),
         };
 
@@ -599,7 +613,9 @@ impl VypConfig {
         let normalized = package.to_lowercase().replace('-', "_");
 
         // Check explicit sources first
-        if let Some(entries) = self.sources.get(package)
+        if let Some(entries) = self
+            .sources
+            .get(package)
             .or_else(|| self.sources.get(&normalized))
         {
             // For now, use the first entry (marker evaluation is a future refinement)
@@ -674,20 +690,21 @@ impl VypConfig {
         let backend_str = torch_backend_override
             .map(String::from)
             .or_else(|| self.torch_backend.clone());
-        let torch_index: Option<(&'static str, Vec<String>)> = backend_str.as_ref().and_then(|val| {
-            let resolved = if val == "auto" {
-                accelerator::detect_backend()
-            } else {
-                accelerator::AcceleratorBackend::from_str(val)
-            };
-            accelerator::backend_index_url(&resolved).map(|url| {
-                let pkgs = accelerator::TORCH_PACKAGES
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect();
-                (url, pkgs)
-            })
-        });
+        let torch_index: Option<(&'static str, Vec<String>)> =
+            backend_str.as_ref().and_then(|val| {
+                let resolved = if val == "auto" {
+                    accelerator::detect_backend()
+                } else {
+                    accelerator::AcceleratorBackend::from_str(val)
+                };
+                accelerator::backend_index_url(&resolved).map(|url| {
+                    let pkgs = accelerator::TORCH_PACKAGES
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect();
+                    (url, pkgs)
+                })
+            });
 
         // Seed each named/explicit index with its declared root packages and
         // collect those roots so they are excluded from the default set.
@@ -743,8 +760,8 @@ impl VypConfig {
                 None,
                 marker_env.cloned(),
                 shared_client.clone(),
-            )),
-        ));
+            ),
+        )));
 
         // Extra indexes
         for idx in &self.extra_indexes {
@@ -769,8 +786,8 @@ impl VypConfig {
                     scope,
                     marker_env.cloned(),
                     shared_client.clone(),
-                )),
-            ));
+                ),
+            )));
         }
 
         // Torch backend: inject a scoped provider for the detected/configured backend.
@@ -782,8 +799,8 @@ impl VypConfig {
                     Some(router.scope_for("pytorch")),
                     marker_env.cloned(),
                     shared_client.clone(),
-                )),
-            ));
+                ),
+            )));
         }
 
         Ok((providers, router))
@@ -838,7 +855,8 @@ impl VypConfig {
                 if !path.is_file() {
                     tracing::warn!(
                         "Plugin path '{}' for '{}' is not a file, skipping",
-                        path_str, plugin_cfg.name
+                        path_str,
+                        plugin_cfg.name
                     );
                     continue;
                 }
@@ -861,7 +879,10 @@ mod tests {
     #[test]
     fn inherit_overrides_defaults_to_all() {
         assert_eq!(parse("").inherit_overrides, InheritOverrides::All);
-        assert_eq!(parse("inherit-overrides = false").inherit_overrides, InheritOverrides::None);
+        assert_eq!(
+            parse("inherit-overrides = false").inherit_overrides,
+            InheritOverrides::None
+        );
     }
 
     #[test]
@@ -874,6 +895,9 @@ mod tests {
     #[test]
     fn errata_feeds_are_parsed() {
         let config = parse("errata = [\"https://example.com/e.toml\", \"local.toml\"]");
-        assert_eq!(config.errata, vec!["https://example.com/e.toml", "local.toml"]);
+        assert_eq!(
+            config.errata,
+            vec!["https://example.com/e.toml", "local.toml"]
+        );
     }
 }

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use vyp_api::traits::metadata_provider::{MetadataProvider, PackageMetadata, PackageVersions};
-use vyp_api::{VypPackage, VypVersion, ConflictSet, Requirement};
+use vyp_api::{ConflictSet, Requirement, VypPackage, VypVersion};
 
 /// An offline metadata provider for testing and mock scenarios.
 /// All packages and their metadata must be registered before resolution.
@@ -22,12 +22,7 @@ impl OfflineMetadataProvider {
     }
 
     /// Register a package version with its dependencies.
-    pub fn add_package(
-        &mut self,
-        name: &str,
-        version: VypVersion,
-        dependencies: Vec<Requirement>,
-    ) {
+    pub fn add_package(&mut self, name: &str, version: VypVersion, dependencies: Vec<Requirement>) {
         self.add_package_with_conflicts(name, version, dependencies, ConflictSet::new());
     }
 
@@ -64,8 +59,7 @@ impl OfflineMetadataProvider {
             source: "offline".to_string(),
         };
 
-        self.metadata
-            .insert((normalized, version), metadata);
+        self.metadata.insert((normalized, version), metadata);
     }
 }
 

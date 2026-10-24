@@ -104,10 +104,7 @@ fn run_info(project: &Path, name: &str) -> miette::Result<()> {
         }
         _ => {
             // Check external plugins
-            let found = loader
-                .loaded_plugins()
-                .iter()
-                .find(|p| p.name == name);
+            let found = loader.loaded_plugins().iter().find(|p| p.name == name);
 
             if let Some(plugin) = found {
                 println!("Plugin: {}", plugin.name);

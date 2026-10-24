@@ -1,24 +1,26 @@
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering as AtomicOrdering};
-use std::time::{Duration, Instant};
-use sha2::{Sha256, Digest};
-use vyp_api::{MarkerEnvironment, MarkerTree, Requirement};
-use vyp_api::DependencyOverride;
-use vyp_core::{ErrataFeedDigest, Erratum, ResolutionResult, ResolverBuilder, ResolveProgress};
-use vyp_index::PlatformTags;
 use futures::stream::{self, StreamExt};
 use rayon::prelude::*;
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use vyp_api::DependencyOverride;
+use vyp_api::{MarkerEnvironment, MarkerTree, Requirement};
+use vyp_core::{ErrataFeedDigest, Erratum, ResolutionResult, ResolveProgress, ResolverBuilder};
+use vyp_index::PlatformTags;
 
-use crate::cache::wheel_cache::WheelCache;
 use crate::cache::linker;
 use crate::cache::startup::{self, StartupPolicy};
 use crate::cache::venv::VenvLayout;
+use crate::cache::wheel_cache::WheelCache;
 use crate::config::settings::{InheritOverrides, VypConfig};
 use crate::lock::errata::{load_feeds, LoadedErrata};
-use crate::lock::shipped_overrides;
 use crate::lock::lockfile::{LockFile, PyLockPackage};
-use crate::lock::universal::{merge_universal_results, parse_python_version_from_marker, UniversalPackageEntry};
+use crate::lock::shipped_overrides;
+use crate::lock::universal::{
+    merge_universal_results, parse_python_version_from_marker, UniversalPackageEntry,
+};
 
 const DEFAULT_INDEX: &str = "https://pypi.org/simple";
 const DEFAULT_CONCURRENT_DOWNLOADS: usize = 50;
@@ -73,7 +75,11 @@ pub fn resolve_from_config(
     progress: Option<Box<dyn Fn(ResolveProgress) + Send>>,
 ) -> miette::Result<(ResolveOut, reqwest::Client)> {
     let shared_client = vyp_index::PyPIMetadataProvider::build_default_client();
-    let errata = load_feeds(&config.errata, config.project_dir.as_deref(), &shared_client)?;
+    let errata = load_feeds(
+        &config.errata,
+        config.project_dir.as_deref(),
+        &shared_client,
+    )?;
 
     // Builds (path/git source metadata, sdists without static metadata) use
     // the interpreter the resolution targets.
@@ -83,14 +89,20 @@ pub fn resolve_from_config(
     let local_sources = if config.local_sources.is_empty() {
         Vec::new()
     } else {
-        let project_dir = config.project_dir.clone().unwrap_or_else(|| PathBuf::from("."));
+        let project_dir = config
+            .project_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("."));
         crate::build::sources::resolve_all(&config.local_sources, &project_dir, || {
             frontend.clone().ok_or_else(|| {
                 miette::miette!("Building local sources needs a Python interpreter; none was found")
             })
         })?
     };
-    let sources = ResolveSources { local: &local_sources, frontend: frontend.as_ref() };
+    let sources = ResolveSources {
+        local: &local_sources,
+        frontend: frontend.as_ref(),
+    };
 
     if config.environments.is_empty() {
         let marker_env = match target_python(config) {
@@ -98,7 +110,14 @@ pub fn resolve_from_config(
             None => MarkerEnvironment::detect(),
         };
         let result = resolve_environment(
-            config, extra_reqs, torch_backend, &marker_env, &shared_client, &errata, &sources, progress,
+            config,
+            extra_reqs,
+            torch_backend,
+            &marker_env,
+            &shared_client,
+            &errata,
+            &sources,
+            progress,
         )
         .map_err(|e| match e {
             ResolveError::NoSolution(msg) => miette::miette!("No solution found:\n{}", msg),
@@ -122,10 +141,19 @@ pub fn resolve_from_config(
 
         // Progress callback is not shared across multi-env resolutions (single use per resolve).
         let result = resolve_environment(
-            config, extra_reqs, torch_backend, &marker_env, &shared_client, &errata, &sources, None,
+            config,
+            extra_reqs,
+            torch_backend,
+            &marker_env,
+            &shared_client,
+            &errata,
+            &sources,
+            None,
         )
         .map_err(|e| match e {
-            ResolveError::NoSolution(msg) => miette::miette!("No solution for {}:\n{}", marker_str, msg),
+            ResolveError::NoSolution(msg) => {
+                miette::miette!("No solution for {}:\n{}", marker_str, msg)
+            }
             ResolveError::Other(err) => err,
         })?;
         report_applied_fixes(&result, Some(marker_str));
@@ -136,7 +164,12 @@ pub fn resolve_from_config(
     let entries = merge_universal_results(env_results, config.fork_strategy);
     let environments = config.environments.clone();
     Ok((
-        ResolveOut::Universal { entries, environments, errata_feeds: errata.feeds, exclude_newer: config.exclude_newer.default },
+        ResolveOut::Universal {
+            entries,
+            environments,
+            errata_feeds: errata.feeds,
+            exclude_newer: config.exclude_newer.default,
+        },
         shared_client,
     ))
 }
@@ -203,8 +236,9 @@ fn resolve_environment(
     mut progress: Option<Box<dyn Fn(ResolveProgress) + Send>>,
 ) -> Result<ResolutionResult, ResolveError> {
     let env_errata = errata.for_environment(marker_env)?;
-    let prefetcher = (config.inherit_overrides != InheritOverrides::None)
-        .then(|| shipped_overrides::Prefetcher::new(client.clone(), config.inherit_overrides.clone()));
+    let prefetcher = (config.inherit_overrides != InheritOverrides::None).then(|| {
+        shipped_overrides::Prefetcher::new(client.clone(), config.inherit_overrides.clone())
+    });
     let mut inherited: Vec<DependencyOverride> = Vec::new();
     let mut seen = Vec::new();
 
@@ -233,7 +267,9 @@ fn resolve_environment(
             result.exclude_newer = config.exclude_newer.default;
             for source in sources.local {
                 if result.packages.contains_key(&source.name) {
-                    result.source_refs.insert(source.name.clone(), source.reference.clone());
+                    result
+                        .source_refs
+                        .insert(source.name.clone(), source.reference.clone());
                 }
             }
             return Ok(result);
@@ -269,19 +305,21 @@ fn resolve_once(
     let mut config = config.clone();
     if config.sdists != vyp_index::SdistPolicy::Never {
         if let Some(frontend) = sources.frontend.cloned() {
-            config.sdist_builder = Some(crate::config::settings::SdistBuilderHook(Arc::new(move |sdist: &Path| {
-                // Builds start their own runtimes, which can't nest in the
-                // index's async runtime this is called from.
-                let frontend = frontend.clone();
-                let sdist = sdist.to_path_buf();
-                std::thread::spawn(move || {
-                    crate::build::unpack_sdist(&sdist)
-                        .and_then(|tree| frontend.metadata(&tree))
-                        .map_err(|e| e.to_string())
-                })
-                .join()
-                .unwrap_or_else(|_| Err("sdist build panicked".to_string()))
-            })));
+            config.sdist_builder = Some(crate::config::settings::SdistBuilderHook(Arc::new(
+                move |sdist: &Path| {
+                    // Builds start their own runtimes, which can't nest in the
+                    // index's async runtime this is called from.
+                    let frontend = frontend.clone();
+                    let sdist = sdist.to_path_buf();
+                    std::thread::spawn(move || {
+                        crate::build::unpack_sdist(&sdist)
+                            .and_then(|tree| frontend.metadata(&tree))
+                            .map_err(|e| e.to_string())
+                    })
+                    .join()
+                    .unwrap_or_else(|_| Err("sdist build panicked".to_string()))
+                },
+            )));
         }
     }
     let config = &config;
@@ -298,7 +336,11 @@ fn resolve_once(
     }
     if let Some(prefetcher) = prefetcher.cloned() {
         builder = builder.with_selection_hook(Box::new(move |name, _version, dist| {
-            prefetcher.start(name, &dist.url, dist.hashes.get("sha256").map(String::as_str));
+            prefetcher.start(
+                name,
+                &dist.url,
+                dist.hashes.get("sha256").map(String::as_str),
+            );
         }));
     }
 
@@ -324,7 +366,10 @@ fn resolve_once(
         builder = builder.with_provider(provider);
     }
     if !sources.local.is_empty() {
-        builder = builder.with_provider(Box::new(crate::build::sources::DirectProvider::new(sources.local, marker_env)));
+        builder = builder.with_provider(Box::new(crate::build::sources::DirectProvider::new(
+            sources.local,
+            marker_env,
+        )));
     }
     builder = builder.with_index_router(router);
 
@@ -338,9 +383,17 @@ fn resolve_once(
 /// shipped by dependencies and errata that touched the selected releases.
 fn report_applied_fixes(result: &ResolutionResult, environment: Option<&str>) {
     let suffix = environment.map(|e| format!(" ({})", e)).unwrap_or_default();
-    let inherited: Vec<_> = result.overrides.iter().filter(|o| o.origin.is_some()).collect();
+    let inherited: Vec<_> = result
+        .overrides
+        .iter()
+        .filter(|o| o.origin.is_some())
+        .collect();
     if !inherited.is_empty() {
-        eprintln!("Applied {} override(s) shipped by dependencies{}:", inherited.len(), suffix);
+        eprintln!(
+            "Applied {} override(s) shipped by dependencies{}:",
+            inherited.len(),
+            suffix
+        );
         for o in inherited {
             eprintln!(
                 "  {} {} (from {})",
@@ -357,11 +410,17 @@ fn report_applied_fixes(result: &ResolutionResult, environment: Option<&str>) {
         .errata
         .iter()
         .filter(|e| {
-            result.packages.get(&e.package).is_some_and(|v| e.exclude || e.applies_to(&e.package, v))
+            result
+                .packages
+                .get(&e.package)
+                .is_some_and(|v| e.exclude || e.applies_to(&e.package, v))
         })
         .count();
     if touched > 0 {
-        eprintln!("Applied {} erratum/errata to selected packages{}", touched, suffix);
+        eprintln!(
+            "Applied {} erratum/errata to selected packages{}",
+            touched, suffix
+        );
     }
 }
 
@@ -409,11 +468,9 @@ fn packages_for_env<'a>(
 ) -> Vec<&'a PyLockPackage> {
     packages
         .iter()
-        .filter(|pkg| {
-            match &pkg.marker {
-                None => true,
-                Some(m) => MarkerTree::parse(m).evaluate(marker_env, &[]),
-            }
+        .filter(|pkg| match &pkg.marker {
+            None => true,
+            Some(m) => MarkerTree::parse(m).evaluate(marker_env, &[]),
         })
         .collect()
 }
@@ -446,7 +503,11 @@ pub fn install_lockfile(
     crate::env::provenance::preflight(layout)?;
     let t_marker_start = Instant::now();
     let marker_env = MarkerEnvironment::detect_with(&layout.python_exe.to_string_lossy());
-    let marker_detect_ms = if profiling { t_marker_start.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
+    let marker_detect_ms = if profiling {
+        t_marker_start.elapsed().as_secs_f64() * 1000.0
+    } else {
+        0.0
+    };
     let packages = packages_for_env(&lockfile.packages, &marker_env);
     // Local trees, VCS checkouts and sdist-only releases are built first,
     // then installed like any wheel.
@@ -461,7 +522,11 @@ pub fn install_lockfile(
     let t_site_start = Instant::now();
     let layout = layout.clone();
     let site_packages = layout.site_packages.clone();
-    let site_packages_ms = if profiling { t_site_start.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
+    let site_packages_ms = if profiling {
+        t_site_start.elapsed().as_secs_f64() * 1000.0
+    } else {
+        0.0
+    };
     let fallback_index = default_index.unwrap_or(DEFAULT_INDEX);
 
     if dry_run {
@@ -471,14 +536,23 @@ pub fn install_lockfile(
             site_packages.display()
         );
         for pkg in packages.iter().chain(&to_build) {
-            println!("  {} == {}{}", pkg.name, pkg.version, if needs_build(pkg) { " (build)" } else { "" });
+            println!(
+                "  {} == {}{}",
+                pkg.name,
+                pkg.version,
+                if needs_build(pkg) { " (build)" } else { "" }
+            );
         }
         return Ok(None);
     }
 
     let total = packages.len() + to_build.len();
     if !quiet {
-        println!("Installing {} packages into {}...", total, site_packages.display());
+        println!(
+            "Installing {} packages into {}...",
+            total,
+            site_packages.display()
+        );
     }
 
     let start = Instant::now();
@@ -536,7 +610,11 @@ pub fn install_lockfile(
             .build()
             .expect("failed to create HTTP client")
     });
-    let runtime_client_ms = if profiling { t_runtime_start.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
+    let runtime_client_ms = if profiling {
+        t_runtime_start.elapsed().as_secs_f64() * 1000.0
+    } else {
+        0.0
+    };
 
     let tmp_dir = wheel_cache.tmp_dir();
     let _ = std::fs::create_dir_all(&tmp_dir);
@@ -576,7 +654,12 @@ pub fn install_lockfile(
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(install_workers)
                 .build()
-                .unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("fallback pool"));
+                .unwrap_or_else(|_| {
+                    rayon::ThreadPoolBuilder::new()
+                        .num_threads(1)
+                        .build()
+                        .expect("fallback pool")
+                });
             let results: Vec<_> = pool.install(|| {
                 cached_owned
                     .par_iter()
@@ -589,8 +672,14 @@ pub fn install_lockfile(
                             Ok(None) => {}
                         }
                         let list_ref = file_list.as_deref();
-                        let res = linker::install_wheel(archive_path, &layout_cached, list_ref, assume_fresh, false)
-                            .map_err(|e| (name.clone(), format!("install failed: {}", e)));
+                        let res = linker::install_wheel(
+                            archive_path,
+                            &layout_cached,
+                            list_ref,
+                            assume_fresh,
+                            false,
+                        )
+                        .map_err(|e| (name.clone(), format!("install failed: {}", e)));
                         lnk_c.fetch_add(t.elapsed().as_nanos() as usize, AtomicOrdering::Relaxed);
                         res
                     })
@@ -616,17 +705,33 @@ pub fn install_lockfile(
                     let policy = startup_policy.clone();
                     async move {
                         let dl_start = Instant::now();
-                        let dw = match download_wheel_job(&cl, &job.name, &job.version, &job.wheels, &fb, &tmp, &tags).await {
+                        let dw = match download_wheel_job(
+                            &cl,
+                            &job.name,
+                            &job.version,
+                            &job.wheels,
+                            &fb,
+                            &tmp,
+                            &tags,
+                        )
+                        .await
+                        {
                             Ok(dw) => dw,
                             Err(e) => return Err((job.name.clone(), e.to_string())),
                         };
                         let dl_elapsed = dl_start.elapsed().as_nanos() as usize;
 
-                        let expected_hash = job.wheels.first()
+                        let expected_hash = job
+                            .wheels
+                            .first()
                             .and_then(|w| w.hashes.as_ref())
                             .and_then(|h| h.get("sha256"))
                             .cloned();
-                        let cache_key = format!("{}-{}", job.name.to_lowercase().replace('-', "_"), job.version);
+                        let cache_key = format!(
+                            "{}-{}",
+                            job.name.to_lowercase().replace('-', "_"),
+                            job.version
+                        );
                         let pkg_name = job.name;
                         let job_version = job.version;
 
@@ -637,30 +742,47 @@ pub fn install_lockfile(
                                 if dw.sha256 != *expected {
                                     return Err((
                                         pkg_name,
-                                        format!("hash mismatch: expected {}, got {}", expected, dw.sha256),
+                                        format!(
+                                            "hash mismatch: expected {}, got {}",
+                                            expected, dw.sha256
+                                        ),
                                     ));
                                 }
                             }
 
                             let wc = WheelCache::new();
                             let ext_start = Instant::now();
-                            let (archive_path, file_list) = match wc.store_from_file_with_list(&cache_key, &dw.path, false) {
+                            let (archive_path, file_list) = match wc
+                                .store_from_file_with_list(&cache_key, &dw.path, false)
+                            {
                                 Ok(r) => r,
-                                Err(e) => return Err((pkg_name, format!("cache store failed: {}", e))),
+                                Err(e) => {
+                                    return Err((pkg_name, format!("cache store failed: {}", e)))
+                                }
                             };
                             let _ = std::fs::remove_file(&dw.path);
-                            ext_c.fetch_add(ext_start.elapsed().as_nanos() as usize, AtomicOrdering::Relaxed);
+                            ext_c.fetch_add(
+                                ext_start.elapsed().as_nanos() as usize,
+                                AtomicOrdering::Relaxed,
+                            );
 
                             // With no published hash to pin, fall back to a
                             // name/version identity check against the wheel's
                             // own METADATA (guards against index confusion).
                             if expected_hash.is_none() {
-                                if let Err(e) = linker::verify_wheel_identity(&archive_path, &pkg_name, &job_version) {
+                                if let Err(e) = linker::verify_wheel_identity(
+                                    &archive_path,
+                                    &pkg_name,
+                                    &job_version,
+                                ) {
                                     return Err((pkg_name, e.to_string()));
                                 }
                             }
 
-                            let files = archive_files(&archive_path, (!file_list.is_empty()).then_some(file_list.as_slice()));
+                            let files = archive_files(
+                                &archive_path,
+                                (!file_list.is_empty()).then_some(file_list.as_slice()),
+                            );
                             match startup::check(&pkg_name, &archive_path, &files, &policy) {
                                 Err(e) => return Err((pkg_name, e)),
                                 Ok(Some(warning)) => eprintln!("warning: {}", warning),
@@ -668,16 +790,31 @@ pub fn install_lockfile(
                             }
 
                             let link_start = Instant::now();
-                            let file_list_ref = if file_list.is_empty() { None } else { Some(file_list.as_slice()) };
-                            if let Err(e) = linker::install_wheel(&archive_path, &layout2, file_list_ref, assume_fresh_dl, false) {
+                            let file_list_ref = if file_list.is_empty() {
+                                None
+                            } else {
+                                Some(file_list.as_slice())
+                            };
+                            if let Err(e) = linker::install_wheel(
+                                &archive_path,
+                                &layout2,
+                                file_list_ref,
+                                assume_fresh_dl,
+                                false,
+                            ) {
                                 return Err((pkg_name, format!("install failed: {}", e)));
                             }
-                            lnk_c.fetch_add(link_start.elapsed().as_nanos() as usize, AtomicOrdering::Relaxed);
+                            lnk_c.fetch_add(
+                                link_start.elapsed().as_nanos() as usize,
+                                AtomicOrdering::Relaxed,
+                            );
 
                             Ok(pkg_name)
                         })
                         .await
-                        .unwrap_or_else(|e| Err(("unknown".into(), format!("task panicked: {}", e))))
+                        .unwrap_or_else(|e| {
+                            Err(("unknown".into(), format!("task panicked: {}", e)))
+                        })
                     }
                 })
                 .buffer_unordered(concurrent_dl)
@@ -685,7 +822,8 @@ pub fn install_lockfile(
                 .await
         };
 
-        let cache_results = cache_link_handle.await
+        let cache_results = cache_link_handle
+            .await
             .unwrap_or_else(|e| vec![Err(("cache-link".into(), format!("task panicked: {}", e)))]);
 
         (cache_results, pipeline_results)
@@ -701,9 +839,20 @@ pub fn install_lockfile(
             .clone()
             .filter(|d| !d.as_os_str().is_empty())
             .unwrap_or_else(|| PathBuf::from("."));
-        let frontend = crate::build::Frontend::for_python(&layout.python_exe, fallback_index, client.clone())?;
+        let frontend =
+            crate::build::Frontend::for_python(&layout.python_exe, fallback_index, client.clone())?;
         for pkg in &to_build {
-            match build_and_install(pkg, &frontend, &layout, &lock_dir, &rt, &client, &wheel_cache, startup_policy, quiet) {
+            match build_and_install(
+                pkg,
+                &frontend,
+                &layout,
+                &lock_dir,
+                &rt,
+                &client,
+                &wheel_cache,
+                startup_policy,
+                quiet,
+            ) {
                 Ok(()) => installed += 1,
                 Err(e) => failed.push((pkg.name.clone(), e.to_string())),
             }
@@ -727,7 +876,11 @@ pub fn install_lockfile(
     if download_count > 0 {
         wheel_cache.evict_archives_if_needed();
     }
-    let eviction_ms = if profiling { t_evict_start.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
+    let eviction_ms = if profiling {
+        t_evict_start.elapsed().as_secs_f64() * 1000.0
+    } else {
+        0.0
+    };
 
     let elapsed = start.elapsed();
     let total_ms = elapsed.as_secs_f64() * 1000.0;
@@ -753,7 +906,8 @@ pub fn install_lockfile(
         let download_ms = dl_ns.load(AtomicOrdering::Relaxed) as f64 / 1_000_000.0;
         let extract_ms = ext_ns.load(AtomicOrdering::Relaxed) as f64 / 1_000_000.0;
         let link_ms = lnk_ns.load(AtomicOrdering::Relaxed) as f64 / 1_000_000.0;
-        let cached_link_wall_ms = cached_link_wall_ns.load(AtomicOrdering::Relaxed) as f64 / 1_000_000.0;
+        let cached_link_wall_ms =
+            cached_link_wall_ns.load(AtomicOrdering::Relaxed) as f64 / 1_000_000.0;
         Some(InstallTiming {
             marker_detect_ms,
             site_packages_ms,
@@ -802,12 +956,21 @@ fn build_and_install(
             None => tree,
         };
         if !quiet {
-            println!("Building {} from {}{}", pkg.name, tree.display(), if dir.editable { " (editable)" } else { "" });
+            println!(
+                "Building {} from {}{}",
+                pkg.name,
+                tree.display(),
+                if dir.editable { " (editable)" } else { "" }
+            );
         }
         (frontend.build(&tree, dir.editable, &out_dir)?, true)
     } else if let Some(vcs) = &pkg.vcs {
         if vcs.kind != "git" {
-            return Err(miette::miette!("{} is a {} checkout; only git is supported", pkg.name, vcs.kind));
+            return Err(miette::miette!(
+                "{} is a {} checkout; only git is supported",
+                pkg.name,
+                vcs.kind
+            ));
         }
         let checkout = crate::build::git::checkout(&vcs.url, &vcs.commit_id)?;
         let tree = match &vcs.subdirectory {
@@ -815,9 +978,22 @@ fn build_and_install(
             None => checkout,
         };
         if !quiet {
-            println!("Building {} from {}@{}", pkg.name, vcs.url, &vcs.commit_id[..vcs.commit_id.len().min(12)]);
+            println!(
+                "Building {} from {}@{}",
+                pkg.name,
+                vcs.url,
+                &vcs.commit_id[..vcs.commit_id.len().min(12)]
+            );
         }
-        (cached_build(frontend, &format!("git-{}-{:?}", vcs.commit_id, vcs.subdirectory), &tree, &out_dir)?, false)
+        (
+            cached_build(
+                frontend,
+                &format!("git-{}-{:?}", vcs.commit_id, vcs.subdirectory),
+                &tree,
+                &out_dir,
+            )?,
+            false,
+        )
     } else if let Some(sdist) = &pkg.sdist {
         let url = sdist
             .url
@@ -826,19 +1002,29 @@ fn build_and_install(
         let sha = sdist.hashes.as_ref().and_then(|h| h.get("sha256")).cloned();
         let semaphore = tokio::sync::Semaphore::new(1);
         let path = rt
-            .block_on(vyp_index::sdist::download(client, &url, &sdist.name, sha.as_deref(), &semaphore))
+            .block_on(vyp_index::sdist::download(
+                client,
+                &url,
+                &sdist.name,
+                sha.as_deref(),
+                &semaphore,
+            ))
             .map_err(|e| miette::miette!("Failed to download {}: {}", sdist.name, e))?;
         if !quiet {
             println!("Building {} from {}", pkg.name, sdist.name);
         }
-        let key = format!("sdist-{}", sha.unwrap_or_else(|| crate::python::hex_sha256(url.as_bytes())));
+        let key = format!(
+            "sdist-{}",
+            sha.unwrap_or_else(|| crate::python::hex_sha256(url.as_bytes()))
+        );
         let tree = crate::build::unpack_sdist(&path)?;
         (cached_build(frontend, &key, &tree, &out_dir)?, false)
     } else {
         return Err(miette::miette!("Nothing to build for {}", pkg.name));
     };
 
-    let wheel_bytes = std::fs::read(&wheel).map_err(|e| miette::miette!("Cannot read {}: {}", wheel.display(), e))?;
+    let wheel_bytes = std::fs::read(&wheel)
+        .map_err(|e| miette::miette!("Cannot read {}: {}", wheel.display(), e))?;
     let key = format!(
         "built-{}-{}-{}",
         vyp_api::normalize_package_name(&pkg.name),
@@ -878,17 +1064,23 @@ fn cached_build(
 ) -> miette::Result<PathBuf> {
     let dir = crate::cache::wheel_cache::cache_base_dir()
         .join("built-wheels")
-        .join(&crate::python::hex_sha256(format!("{}\n{}", key, frontend.interpreter_key()).as_bytes())[..24]);
-    if let Some(wheel) = std::fs::read_dir(&dir)
-        .ok()
-        .and_then(|d| d.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "whl")))
-    {
+        .join(
+            &crate::python::hex_sha256(
+                format!("{}\n{}", key, frontend.interpreter_key()).as_bytes(),
+            )[..24],
+        );
+    if let Some(wheel) = std::fs::read_dir(&dir).ok().and_then(|d| {
+        d.flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "whl"))
+    }) {
         return Ok(wheel);
     }
     let built = frontend.build(tree, false, out_dir)?;
     std::fs::create_dir_all(&dir).map_err(|e| miette::miette!("{}", e))?;
     let dest = dir.join(built.file_name().unwrap_or_default());
-    std::fs::copy(&built, &dest).map_err(|e| miette::miette!("Failed to cache {}: {}", built.display(), e))?;
+    std::fs::copy(&built, &dest)
+        .map_err(|e| miette::miette!("Failed to cache {}: {}", built.display(), e))?;
     Ok(dest)
 }
 
@@ -908,7 +1100,11 @@ fn archive_files(archive: &Path, list: Option<&[PathBuf]>) -> Vec<PathBuf> {
 
 /// Stable cache key for a package: normalized name + version.
 fn pkg_cache_key(pkg: &PyLockPackage) -> String {
-    format!("{}-{}", pkg.name.to_lowercase().replace('-', "_"), pkg.version)
+    format!(
+        "{}-{}",
+        pkg.name.to_lowercase().replace('-', "_"),
+        pkg.version
+    )
 }
 
 /// Download a wheel given owned job data (for the streaming pipeline).
@@ -978,7 +1174,9 @@ fn is_transient(e: &DownloadError) -> bool {
                 || e.is_timeout()
                 || e.is_body()
                 || e.is_request()
-                || e.status().is_some_and(|s| s == reqwest::StatusCode::TOO_MANY_REQUESTS || s.is_server_error())
+                || e.status().is_some_and(|s| {
+                    s == reqwest::StatusCode::TOO_MANY_REQUESTS || s.is_server_error()
+                })
         }
         DownloadError::Io(_) => false,
     }
@@ -987,7 +1185,11 @@ fn is_transient(e: &DownloadError) -> bool {
 /// Download `url` to `path`, retrying transient failures with backoff: a
 /// dropped connection or a 5xx/429 on one of dozens of parallel downloads
 /// shouldn't fail the whole install.
-async fn download_with_retries(client: &reqwest::Client, url: &str, path: &Path) -> Result<String, DownloadError> {
+async fn download_with_retries(
+    client: &reqwest::Client,
+    url: &str,
+    path: &Path,
+) -> Result<String, DownloadError> {
     const ATTEMPTS: u32 = 4;
     let mut attempt = 0;
     loop {
@@ -995,7 +1197,12 @@ async fn download_with_retries(client: &reqwest::Client, url: &str, path: &Path)
             Ok(sha) => return Ok(sha),
             Err(e) if attempt + 1 < ATTEMPTS && is_transient(&e) => {
                 attempt += 1;
-                tracing::debug!("retrying download of {} (attempt {}): {}", url, attempt + 1, e);
+                tracing::debug!(
+                    "retrying download of {} (attempt {}): {}",
+                    url,
+                    attempt + 1,
+                    e
+                );
                 tokio::time::sleep(Duration::from_millis(250u64 << attempt)).await;
             }
             Err(e) => return Err(e),
@@ -1004,7 +1211,11 @@ async fn download_with_retries(client: &reqwest::Client, url: &str, path: &Path)
 }
 
 /// Stream `url` into `path`, returning the SHA-256 of what was written.
-async fn fetch_to_file(client: &reqwest::Client, url: &str, path: &Path) -> Result<String, DownloadError> {
+async fn fetch_to_file(
+    client: &reqwest::Client,
+    url: &str,
+    path: &Path,
+) -> Result<String, DownloadError> {
     use futures::TryStreamExt;
     use tokio::io::AsyncWriteExt;
     let response = vyp_index::auth::apply_auth(client.get(url), url)
@@ -1012,7 +1223,9 @@ async fn fetch_to_file(client: &reqwest::Client, url: &str, path: &Path) -> Resu
         .await
         .and_then(|r| r.error_for_status())
         .map_err(DownloadError::Http)?;
-    let mut file = tokio::fs::File::create(path).await.map_err(DownloadError::Io)?;
+    let mut file = tokio::fs::File::create(path)
+        .await
+        .map_err(DownloadError::Io)?;
     let mut hasher = Sha256::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.try_next().await.map_err(DownloadError::Http)? {
@@ -1110,7 +1323,10 @@ fn find_wheel_url_html(
                 let href = &rest[..href_end];
                 let filename = href.rsplit('/').next().unwrap_or(href);
                 let filename = filename.split('#').next().unwrap_or(filename);
-                if filename.contains(&version_tag) && filename.ends_with(".whl") && tags.is_compatible(filename) {
+                if filename.contains(&version_tag)
+                    && filename.ends_with(".whl")
+                    && tags.is_compatible(filename)
+                {
                     let score = tags.compatibility_score(filename);
                     if best.as_ref().is_none_or(|(bs, _)| score > *bs) {
                         best = Some((score, href.to_string()));
@@ -1120,8 +1336,13 @@ fn find_wheel_url_html(
         }
     }
 
-    best.map(|(_, url)| url)
-        .ok_or_else(|| format!("No compatible wheel found for version {} in HTML index", version).into())
+    best.map(|(_, url)| url).ok_or_else(|| {
+        format!(
+            "No compatible wheel found for version {} in HTML index",
+            version
+        )
+        .into()
+    })
 }
 
 #[cfg(test)]
@@ -1157,8 +1378,13 @@ mod download_tests {
         ])
         .await;
         let path = std::env::temp_dir().join(format!("vyp-dl-{}-ok", std::process::id()));
-        let sha = download_with_retries(&reqwest::Client::new(), &url, &path).await.unwrap();
-        assert_eq!(sha, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        let sha = download_with_retries(&reqwest::Client::new(), &url, &path)
+            .await
+            .unwrap();
+        assert_eq!(
+            sha,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
         assert_eq!(std::fs::read(&path).unwrap(), b"abc");
         assert_eq!(hits.load(Ordering::SeqCst), 2);
         let _ = std::fs::remove_file(path);
@@ -1172,7 +1398,9 @@ mod download_tests {
         ])
         .await;
         let path = std::env::temp_dir().join(format!("vyp-dl-{}-404", std::process::id()));
-        assert!(download_with_retries(&reqwest::Client::new(), &url, &path).await.is_err());
+        assert!(download_with_retries(&reqwest::Client::new(), &url, &path)
+            .await
+            .is_err());
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 }

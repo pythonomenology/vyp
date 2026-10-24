@@ -42,7 +42,12 @@ pub fn install_wheel(
         None => walkdir::WalkDir::new(archive_dir)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter_map(|e| e.path().strip_prefix(archive_dir).ok().map(|p| p.to_path_buf()))
+            .filter_map(|e| {
+                e.path()
+                    .strip_prefix(archive_dir)
+                    .ok()
+                    .map(|p| p.to_path_buf())
+            })
             .filter(|p| !p.as_os_str().is_empty())
             .collect(),
     };
@@ -79,8 +84,14 @@ pub fn install_wheel(
                         continue;
                     }
                     if let Some((hash, size)) = wheel_record.get(&rel_key) {
-                        records.push(RecordEntry { rel: rel_key, hash: hash.clone(), size: *size });
-                    } else if let Some(entry) = record_entry(layout, &layout.site_packages.join(rel))? {
+                        records.push(RecordEntry {
+                            rel: rel_key,
+                            hash: hash.clone(),
+                            size: *size,
+                        });
+                    } else if let Some(entry) =
+                        record_entry(layout, &layout.site_packages.join(rel))?
+                    {
                         records.push(entry);
                     }
                     continue;
@@ -95,25 +106,23 @@ pub fn install_wheel(
 
         // Route the file: a `*.data/<scheme>/...` payload is relocated, all
         // other files land in site-packages.
-        let (target, is_script, from_data) = match data_dir
-            .as_deref()
-            .and_then(|d| rel.strip_prefix(d).ok())
-        {
-            Some(inner) => {
-                let mut comps = inner.components();
-                let scheme = comps
-                    .next()
-                    .map(|c| c.as_os_str().to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let sub: PathBuf = comps.as_path().to_path_buf();
-                if sub.as_os_str().is_empty() {
-                    continue;
+        let (target, is_script, from_data) =
+            match data_dir.as_deref().and_then(|d| rel.strip_prefix(d).ok()) {
+                Some(inner) => {
+                    let mut comps = inner.components();
+                    let scheme = comps
+                        .next()
+                        .map(|c| c.as_os_str().to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let sub: PathBuf = comps.as_path().to_path_buf();
+                    if sub.as_os_str().is_empty() {
+                        continue;
+                    }
+                    let dest_dir = layout.data_scheme_target(&scheme);
+                    (dest_dir.join(&sub), scheme == "scripts", true)
                 }
-                let dest_dir = layout.data_scheme_target(&scheme);
-                (dest_dir.join(&sub), scheme == "scripts", true)
-            }
-            None => (layout.site_packages.join(rel), false, false),
-        };
+                None => (layout.site_packages.join(rel), false, false),
+            };
 
         ensure_parent(&target, &mut created_dirs)?;
 
@@ -125,9 +134,10 @@ pub fn install_wheel(
 
         // The wheel's own RECORD is regenerated below; don't carry it over.
         let rel_key = rel.to_string_lossy().replace('\\', "/");
-        if dist_info.as_ref().is_some_and(|di| {
-            rel_key == format!("{}/RECORD", di.to_string_lossy())
-        }) {
+        if dist_info
+            .as_ref()
+            .is_some_and(|di| rel_key == format!("{}/RECORD", di.to_string_lossy()))
+        {
             continue;
         }
 
@@ -204,7 +214,12 @@ pub fn install_from_archive(
             walk_owned = walkdir::WalkDir::new(archive_dir)
                 .into_iter()
                 .filter_map(|e| e.ok())
-                .filter_map(|e| e.path().strip_prefix(archive_dir).ok().map(|p| p.to_path_buf()))
+                .filter_map(|e| {
+                    e.path()
+                        .strip_prefix(archive_dir)
+                        .ok()
+                        .map(|p| p.to_path_buf())
+                })
                 .filter(|p| !p.as_os_str().is_empty())
                 .collect::<Vec<_>>();
             &walk_owned
@@ -378,11 +393,15 @@ fn parse_entry_point_scripts(content: &str) -> Vec<EntryScript> {
             "gui_scripts" => true,
             _ => continue,
         };
-        let Some((name, target)) = line.split_once('=') else { continue };
+        let Some((name, target)) = line.split_once('=') else {
+            continue;
+        };
         let name = name.trim();
         // Strip any `[extras]` suffix from the target.
         let target = target.split('[').next().unwrap_or("").trim();
-        let Some((module, attr)) = target.split_once(':') else { continue };
+        let Some((module, attr)) = target.split_once(':') else {
+            continue;
+        };
         let (module, attr) = (module.trim(), attr.trim());
         if name.is_empty() || module.is_empty() || attr.is_empty() {
             continue;
@@ -477,7 +496,11 @@ fn record_entry(
     let digest = hasher.finalize();
     let hash = format!("sha256={}", base64_urlsafe_nopad(&digest));
     let rel = relative_to(&layout.site_packages, target);
-    Ok(Some(RecordEntry { rel, hash, size: meta.len() }))
+    Ok(Some(RecordEntry {
+        rel,
+        hash,
+        size: meta.len(),
+    }))
 }
 
 /// Parse a wheel's bundled `RECORD` into `path -> (hash, size)`, so installed
@@ -493,12 +516,18 @@ fn parse_wheel_record(record_path: &Path) -> std::collections::HashMap<String, (
         // commas; wheel paths almost never are, so split from the right on the
         // last two commas to isolate hash and size.
         let line = line.trim_end_matches(['\r', '\n']);
-        let Some((rest, size)) = line.rsplit_once(',') else { continue };
-        let Some((path, hash)) = rest.rsplit_once(',') else { continue };
+        let Some((rest, size)) = line.rsplit_once(',') else {
+            continue;
+        };
+        let Some((path, hash)) = rest.rsplit_once(',') else {
+            continue;
+        };
         if hash.is_empty() || size.is_empty() {
             continue;
         }
-        let Ok(size) = size.parse::<u64>() else { continue };
+        let Ok(size) = size.parse::<u64>() else {
+            continue;
+        };
         let path = path.trim_matches('"').to_string();
         map.insert(path, (hash.to_string(), size));
     }
@@ -563,11 +592,7 @@ pub fn verify_wheel_identity(
         .max_depth(2)
         .into_iter()
         .filter_map(|e| e.ok())
-        .find(|e| {
-            e.path()
-                .to_string_lossy()
-                .ends_with(".dist-info/METADATA")
-        });
+        .find(|e| e.path().to_string_lossy().ends_with(".dist-info/METADATA"));
     let Some(entry) = metadata_path else {
         // No METADATA found (unusual); don't block the install on it.
         return Ok(());
@@ -623,8 +648,7 @@ fn top_level_dir_with_suffix(files: &[PathBuf], suffix: &str) -> Option<PathBuf>
 
 /// URL-safe base64 without padding (the RECORD hash encoding per PEP 376).
 fn base64_urlsafe_nopad(data: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -699,7 +723,11 @@ ignored = x:y
         let dist_info = format!("{}-1.0.dist-info", name);
         let mut list = Vec::new();
         let mut record = String::new();
-        for f in files.iter().copied().chain([format!("{}/METADATA", dist_info).as_str()]) {
+        for f in files
+            .iter()
+            .copied()
+            .chain([format!("{}/METADATA", dist_info).as_str()])
+        {
             let p = dir.join(f);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, f).unwrap();
@@ -726,22 +754,37 @@ ignored = x:y
             python_version: "3.13".into(),
             relocatable: false,
         };
-        let (a, a_files) = fake_wheel(&root, "a", &["ns/a/__init__.py", "ns/a/deep/mod.py", "a_top.py"]);
+        let (a, a_files) = fake_wheel(
+            &root,
+            "a",
+            &["ns/a/__init__.py", "ns/a/deep/mod.py", "a_top.py"],
+        );
         let (b, b_files) = fake_wheel(&root, "b", &["ns/b/__init__.py"]);
         install_wheel(&a, &layout, Some(&a_files), true, false).unwrap();
         install_wheel(&b, &layout, Some(&b_files), false, false).unwrap();
 
         let sp = &layout.site_packages;
-        for f in ["ns/a/__init__.py", "ns/a/deep/mod.py", "a_top.py", "ns/b/__init__.py"] {
+        for f in [
+            "ns/a/__init__.py",
+            "ns/a/deep/mod.py",
+            "a_top.py",
+            "ns/b/__init__.py",
+        ] {
             assert!(sp.join(f).is_file(), "{} missing", f);
         }
         let record = std::fs::read_to_string(sp.join("a-1.0.dist-info/RECORD")).unwrap();
         assert!(record.contains("ns/a/deep/mod.py,sha256=x,"), "{}", record);
         assert!(record.contains("a-1.0.dist-info/INSTALLER"), "{}", record);
-        assert!(std::fs::read_dir(sp).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with(".vyp-clone")));
+        assert!(std::fs::read_dir(sp)
+            .unwrap()
+            .flatten()
+            .all(|e| !e.file_name().to_string_lossy().starts_with(".vyp-clone")));
         // Writing into the venv must not touch the cached archive.
         std::fs::write(sp.join("ns/a/__init__.py"), "changed").unwrap();
-        assert_eq!(std::fs::read_to_string(a.join("ns/a/__init__.py")).unwrap(), "ns/a/__init__.py");
+        assert_eq!(
+            std::fs::read_to_string(a.join("ns/a/__init__.py")).unwrap(),
+            "ns/a/__init__.py"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

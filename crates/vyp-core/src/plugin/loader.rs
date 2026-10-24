@@ -1,7 +1,7 @@
-use vyp_api::plugin_abi::{PluginInitFn, VYP_ABI_VERSION};
-use vyp_api::PluginRegistration;
 use std::path::Path;
 use tracing::{info, warn};
+use vyp_api::plugin_abi::{PluginInitFn, VYP_ABI_VERSION};
+use vyp_api::PluginRegistration;
 
 use super::registry::{FilterRegistry, ProviderRegistry, StrategyRegistry};
 
@@ -76,8 +76,7 @@ impl PluginLoader {
         info!(path = %path_str, "Loading plugin");
 
         let lib = unsafe {
-            libloading::Library::new(path)
-                .map_err(|e| PluginLoadError::LoadError(e.to_string()))?
+            libloading::Library::new(path).map_err(|e| PluginLoadError::LoadError(e.to_string()))?
         };
 
         let init_fn: libloading::Symbol<PluginInitFn> = unsafe {

@@ -26,9 +26,7 @@ pub enum StrategyVerdict {
     /// The conflict should be surfaced as an error (no resolution possible).
     Fail { message: String },
     /// Rewrite the version ranges to resolve the conflict.
-    RewriteRanges {
-        rewrites: Vec<RangeRewrite>,
-    },
+    RewriteRanges { rewrites: Vec<RangeRewrite> },
     /// Fork the resolution: resolve the contested package differently
     /// depending on which conflict group is active.
     Fork {

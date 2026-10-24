@@ -39,8 +39,13 @@ struct Response {
 }
 
 /// Serve fixed responses by path on a background runtime; returns the port.
-fn serve(rt: &tokio::runtime::Runtime, routes: impl Fn(u16) -> HashMap<String, Response> + Send + 'static) -> u16 {
-    let listener = rt.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
+fn serve(
+    rt: &tokio::runtime::Runtime,
+    routes: impl Fn(u16) -> HashMap<String, Response> + Send + 'static,
+) -> u16 {
+    let listener = rt
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .unwrap();
     let port = listener.local_addr().unwrap().port();
     let routes = Arc::new(routes(port));
     rt.spawn(async move {
@@ -72,7 +77,12 @@ fn serve(rt: &tokio::runtime::Runtime, routes: impl Fn(u16) -> HashMap<String, R
 }
 
 fn ok(content_type: &'static str, body: impl Into<Vec<u8>>) -> Response {
-    Response { status: "200 OK", content_type, extra_headers: String::new(), body: body.into() }
+    Response {
+        status: "200 OK",
+        content_type,
+        extra_headers: String::new(),
+        body: body.into(),
+    }
 }
 
 fn simple_json(port: u16, name: &str, sidecar: bool) -> Response {
@@ -106,21 +116,33 @@ fn metadata_before_versions_uses_sidecar() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let port = serve(&rt, |port| {
         HashMap::from([
-            ("/simple/pinsidecar/".to_string(), simple_json(port, "pinsidecar", true)),
+            (
+                "/simple/pinsidecar/".to_string(),
+                simple_json(port, "pinsidecar", true),
+            ),
             (
                 "/files/pinsidecar-1.0-py3-none-any.whl.metadata".to_string(),
-                ok("text/plain", "Metadata-Version: 2.1\nName: pinsidecar\nVersion: 1.0\nRequires-Dist: leaf\n"),
+                ok(
+                    "text/plain",
+                    "Metadata-Version: 2.1\nName: pinsidecar\nVersion: 1.0\nRequires-Dist: leaf\n",
+                ),
             ),
         ])
     });
     let provider = PyPIMetadataProvider::new(&format!("http://127.0.0.1:{}/simple", port));
     let meta = within_10s(move || {
         let v: VypVersion = "1.0".parse().unwrap();
-        provider.get_metadata(&VypPackage::named("pinsidecar"), &v).map_err(|e| e.to_string())
+        provider
+            .get_metadata(&VypPackage::named("pinsidecar"), &v)
+            .map_err(|e| e.to_string())
     })
     .expect("get_metadata")
     .expect("metadata present");
-    let deps: Vec<_> = meta.dependencies.iter().map(|r| r.package.name().to_string()).collect();
+    let deps: Vec<_> = meta
+        .dependencies
+        .iter()
+        .map(|r| r.package.name().to_string())
+        .collect();
     assert_eq!(deps, ["leaf"]);
 }
 
@@ -134,7 +156,10 @@ fn empty_central_directory_is_an_error_not_a_hang() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let port = serve(&rt, |port| {
         HashMap::from([
-            ("/simple/emptycd/".to_string(), simple_json(port, "emptycd", false)),
+            (
+                "/simple/emptycd/".to_string(),
+                simple_json(port, "emptycd", false),
+            ),
             (
                 "/files/emptycd-1.0-py3-none-any.whl".to_string(),
                 Response {
@@ -160,7 +185,10 @@ fn empty_central_directory_is_an_error_not_a_hang() {
     // inverted range `bytes=50-49`.
     for file in ["emptycd", "emptycd50"] {
         let client = reqwest::Client::new();
-        let url = format!("http://127.0.0.1:{}/files/{}-1.0-py3-none-any.whl", port, file);
+        let url = format!(
+            "http://127.0.0.1:{}/files/{}-1.0-py3-none-any.whl",
+            port, file
+        );
         let direct = rt.block_on(async {
             let sem = tokio::sync::Semaphore::new(1);
             vyp_index::wheel_metadata::fetch_wheel_metadata(&client, &url, &sem)
@@ -173,9 +201,15 @@ fn empty_central_directory_is_an_error_not_a_hang() {
     let provider = PyPIMetadataProvider::new(&format!("http://127.0.0.1:{}/simple", port));
     let meta = within_10s(move || {
         let v: VypVersion = "1.0".parse().unwrap();
-        provider.get_metadata(&VypPackage::named("emptycd"), &v).map_err(|e| e.to_string())
+        provider
+            .get_metadata(&VypPackage::named("emptycd"), &v)
+            .map_err(|e| e.to_string())
     });
-    assert!(matches!(meta, Ok(None)), "unexpected result: {:?}", meta.map(|m| m.is_some()));
+    assert!(
+        matches!(meta, Ok(None)),
+        "unexpected result: {:?}",
+        meta.map(|m| m.is_some())
+    );
 }
 
 /// When the version list itself fails, `get_metadata` reports that failure
@@ -204,7 +238,11 @@ fn metadata_reports_failed_version_list() {
             .map_err(|e| e.to_string())
     });
     let err = meta.unwrap_err();
-    assert!(err.contains("failed to fetch versions for vfail"), "{}", err);
+    assert!(
+        err.contains("failed to fetch versions for vfail"),
+        "{}",
+        err
+    );
 }
 
 /// A task that panics after claiming a slot must still wake its waiters.
@@ -234,11 +272,15 @@ fn claim_keeps_result_that_was_set() {
     assert!(index.register_metadata("fine", &v));
     {
         let _claim = MetadataClaim::new(Arc::clone(&index), "fine", &v);
-        index.set_metadata("fine", &v, MetadataResult {
-            dependencies: Vec::new(),
-            full_metadata: None,
-            fetch_error: None,
-        });
+        index.set_metadata(
+            "fine",
+            &v,
+            MetadataResult {
+                dependencies: Vec::new(),
+                full_metadata: None,
+                fetch_error: None,
+            },
+        );
     }
     assert!(index.wait_metadata("fine", &v).fetch_error.is_none());
 }

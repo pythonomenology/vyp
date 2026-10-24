@@ -11,7 +11,11 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "vyp", version, about = "Transitive-conflict-aware Python dependency resolver")]
+#[command(
+    name = "vyp",
+    version,
+    about = "Transitive-conflict-aware Python dependency resolver"
+)]
 struct Cli {
     #[command(subcommand)]
     command: cli::Commands,

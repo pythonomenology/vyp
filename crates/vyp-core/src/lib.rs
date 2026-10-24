@@ -13,17 +13,16 @@ use std::time::Instant;
 
 use version_ranges::Ranges;
 
-use vyp_api::{
-    VypPackage, VypVersion, DependencyOverride, Requirement,
-    ResolutionProvenance, SubstitutionSet, SelectionReason,
-    ConflictSet, normalize_package_name,
-};
 use vyp_api::traits::conflict_strategy::{ConflictContext, StrategyVerdict};
 use vyp_api::traits::resolution_filter::Candidate;
+use vyp_api::{
+    normalize_package_name, ConflictSet, DependencyOverride, Requirement, ResolutionProvenance,
+    SelectionReason, SubstitutionSet, VypPackage, VypVersion,
+};
 
 use plugin::loader::PluginLoader;
 use plugin::registry::{FilterRegistry, ProviderRegistry, StrategyRegistry};
-use resolver::{requirements_to_range, SolverState, SolverError, PackageId, VS};
+use resolver::{requirements_to_range, PackageId, SolverError, SolverState, VS};
 use strategies::override_strategy::OverrideConflictStrategy;
 
 type DepsCache = HashMap<(String, VypVersion), Arc<Vec<(VypPackage, VS)>>>;
@@ -279,7 +278,10 @@ impl ResolverBuilder {
 
     /// Allow pre-releases of these packages regardless of the policy.
     pub fn with_pre_release_packages(mut self, packages: impl IntoIterator<Item = String>) -> Self {
-        self.pre_release_packages = packages.into_iter().map(|p| normalize_package_name(&p)).collect();
+        self.pre_release_packages = packages
+            .into_iter()
+            .map(|p| normalize_package_name(&p))
+            .collect();
         self
     }
 
@@ -307,10 +309,7 @@ impl ResolverBuilder {
     }
 
     /// Register a metadata provider directly.
-    pub fn with_provider(
-        mut self,
-        provider: Box<dyn vyp_api::MetadataProvider>,
-    ) -> Self {
+    pub fn with_provider(mut self, provider: Box<dyn vyp_api::MetadataProvider>) -> Self {
         self.plugin_loader.providers.register(provider);
         self
     }
@@ -353,18 +352,20 @@ impl ResolverBuilder {
         if !range_overrides.is_empty() {
             self.plugin_loader
                 .strategies
-                .register(Box::new(OverrideConflictStrategy::new(
-                    range_overrides,
-                )));
+                .register(Box::new(OverrideConflictStrategy::new(range_overrides)));
         }
 
         if !self.substitutions.is_empty() {
-            self.plugin_loader.strategies.register(Box::new(
-                SubstitutionStrategy::new(self.substitutions.clone()),
-            ));
-            self.plugin_loader.filters.register(Box::new(
-                SubstitutionFilter::new(self.substitutions.clone()),
-            ));
+            self.plugin_loader
+                .strategies
+                .register(Box::new(SubstitutionStrategy::new(
+                    self.substitutions.clone(),
+                )));
+            self.plugin_loader
+                .filters
+                .register(Box::new(SubstitutionFilter::new(
+                    self.substitutions.clone(),
+                )));
         }
 
         if self.errata.iter().any(|e| e.exclude) {
@@ -546,7 +547,10 @@ impl ResolverBuilder {
             // 1. Unit propagation
             let _satisfier_causes = match solver.unit_propagation(*next_pkg) {
                 Ok(causes) => causes,
-                Err(SolverError::NoSolution { derivation_tree, contested_packages }) => {
+                Err(SolverError::NoSolution {
+                    derivation_tree,
+                    contested_packages,
+                }) => {
                     let mut msg = derivation_tree;
 
                     if let Some(contested_name) = contested_packages.first() {
@@ -560,20 +564,23 @@ impl ResolverBuilder {
                             contested_package: contested_pkg,
                             requirements,
                             inherited_conflicts: Vec::new(),
-                            current_resolution: solver.partial_solution.extract_solution()
+                            current_resolution: solver
+                                .partial_solution
+                                .extract_solution()
                                 .into_iter()
                                 .filter_map(|(id, v)| {
                                     let pkg = solver.package_name(id);
-                                    if pkg.is_root() { None }
-                                    else { Some((pkg.name().to_string(), v)) }
+                                    if pkg.is_root() {
+                                        None
+                                    } else {
+                                        Some((pkg.name().to_string(), v))
+                                    }
                                 })
                                 .collect(),
                         };
 
-                        let explanation = resolver::explain::explain_failure(
-                            &ctx,
-                            &plugin_loader.strategies,
-                        );
+                        let explanation =
+                            resolver::explain::explain_failure(&ctx, &plugin_loader.strategies);
                         msg.push_str("\n\n");
                         msg.push_str(&explanation.to_string());
                     }
@@ -637,12 +644,20 @@ impl ResolverBuilder {
                 }
 
                 if let Some(ref cb) = progress {
-                    cb(ResolveProgress::Complete { package_count: packages.len() });
+                    cb(ResolveProgress::Complete {
+                        package_count: packages.len(),
+                    });
                 }
 
                 let provenance = resolver::provenance::annotate_provenance(&packages, provenance);
                 let backtracks = if check_backtracks {
-                    find_backtracks(&packages, root_ranges, version_cache, deps_cache, &plugin_loader.providers)
+                    find_backtracks(
+                        &packages,
+                        root_ranges,
+                        version_cache,
+                        deps_cache,
+                        &plugin_loader.providers,
+                    )
                 } else {
                     Vec::new()
                 };
@@ -652,17 +667,23 @@ impl ResolverBuilder {
                 let mut sdist_urls = HashMap::new();
                 for (name, version) in &packages {
                     if let Some(dist) = plugin_loader.providers.wheel_dist(name, version) {
-                        wheel_urls.insert(name.clone(), WheelUrlInfo {
-                            filename: dist.filename,
-                            url: dist.url,
-                            hashes: dist.hashes.into_iter().collect(),
-                        });
+                        wheel_urls.insert(
+                            name.clone(),
+                            WheelUrlInfo {
+                                filename: dist.filename,
+                                url: dist.url,
+                                hashes: dist.hashes.into_iter().collect(),
+                            },
+                        );
                     } else if let Some(dist) = plugin_loader.providers.sdist_dist(name, version) {
-                        sdist_urls.insert(name.clone(), WheelUrlInfo {
-                            filename: dist.filename,
-                            url: dist.url,
-                            hashes: dist.hashes.into_iter().collect(),
-                        });
+                        sdist_urls.insert(
+                            name.clone(),
+                            WheelUrlInfo {
+                                filename: dist.filename,
+                                url: dist.url,
+                                hashes: dist.hashes.into_iter().collect(),
+                            },
+                        );
                     }
                 }
                 let wheel_url_ns = wheel_url_start.elapsed().as_nanos();
@@ -816,8 +837,12 @@ fn find_backtracks(
     names.sort();
     for name in names {
         let selected = &packages[name];
-        let Some(versions) = version_cache.get(name) else { continue };
-        let Some(newest) = versions.iter().max() else { continue };
+        let Some(versions) = version_cache.get(name) else {
+            continue;
+        };
+        let Some(newest) = versions.iter().max() else {
+            continue;
+        };
         if newest <= selected {
             continue;
         }
@@ -849,24 +874,34 @@ fn find_backtracks(
         let selected_deps = deps_cache.get(&(name.clone(), selected.clone()));
         for req in &metadata.dependencies {
             let dep = req.package.name();
-            let Some(dep_version) = packages.get(dep) else { continue };
+            let Some(dep_version) = packages.get(dep) else {
+                continue;
+            };
             let newest_range = requirements_to_range(&req.constraints);
             // Only an upper bound below the selected version is suspicious;
             // a raised lower bound means the old release is the right one.
             let capped = !newest_range.contains(dep_version)
-                && newest_range.intersection(&Ranges::higher_than(dep_version.clone())).is_empty();
+                && newest_range
+                    .intersection(&Ranges::higher_than(dep_version.clone()))
+                    .is_empty();
             if !capped {
                 continue;
             }
-            let old_range = selected_deps
-                .and_then(|deps| deps.iter().find(|(p, _)| p.name() == dep).map(|(_, r)| r.clone()));
+            let old_range = selected_deps.and_then(|deps| {
+                deps.iter()
+                    .find(|(p, _)| p.name() == dep)
+                    .map(|(_, r)| r.clone())
+            });
             // The release we fell back to bounding the dependency itself means
             // its maintainers made a call; only an unbounded one is suspect.
             let far_future = VypVersion::new(vec![u32::MAX]);
             if old_range.is_some_and(|r| !r.contains(&far_future)) {
                 continue;
             }
-            let skipped = versions.iter().filter(|v| *v > selected && *v < newest).count();
+            let skipped = versions
+                .iter()
+                .filter(|v| *v > selected && *v < newest)
+                .count();
             warnings.push(BacktrackWarning {
                 package: name.clone(),
                 selected: selected.clone(),
@@ -1016,8 +1051,7 @@ fn get_dependencies(
     if let Some(cached) = deps_cache.get(&key) {
         // Re-propagate index membership even on a cache hit: the parent's
         // routing may have been decided after these deps were first computed.
-        let dep_names: Vec<String> =
-            cached.iter().map(|(p, _)| p.name().to_string()).collect();
+        let dep_names: Vec<String> = cached.iter().map(|(p, _)| p.name().to_string()).collect();
         index_router.propagate(package.name(), &dep_names);
         return Arc::clone(cached);
     }
@@ -1050,7 +1084,8 @@ fn get_dependencies(
                     let range = requirements_to_range(&req.constraints);
                     deps.push((req.package.clone(), range));
 
-                    let dep_record = provenance.records
+                    let dep_record = provenance
+                        .records
                         .entry(req.package.name().to_string())
                         .or_default();
                     let requester = format!("{}=={}", package.name(), version);
@@ -1065,7 +1100,10 @@ fn get_dependencies(
 
     // Errata add requirements the release should have declared. An erratum
     // on a package that is already a dependency narrows its range.
-    for erratum in errata.iter().filter(|e| e.applies_to(package.name(), version)) {
+    for erratum in errata
+        .iter()
+        .filter(|e| e.applies_to(package.name(), version))
+    {
         let requester = format!("{}=={} (erratum)", package.name(), version);
         for req in &erratum.requires {
             let range = requirements_to_range(&req.constraints);
@@ -1135,11 +1173,13 @@ fn get_dependencies(
                                 }
                                 if let Some(upper) = &rewrite.new_upper {
                                     if rewrite.upper_inclusive {
-                                        new_range = new_range
-                                            .intersection(&Ranges::strictly_lower_than(upper.bump()));
+                                        new_range = new_range.intersection(
+                                            &Ranges::strictly_lower_than(upper.bump()),
+                                        );
                                     } else {
-                                        new_range = new_range
-                                            .intersection(&Ranges::strictly_lower_than(upper.clone()));
+                                        new_range = new_range.intersection(
+                                            &Ranges::strictly_lower_than(upper.clone()),
+                                        );
                                     }
                                 }
                                 *range = range.intersection(&new_range);
@@ -1148,7 +1188,10 @@ fn get_dependencies(
                     }
                     break;
                 }
-                StrategyVerdict::Fork { conflict_name, forks } => {
+                StrategyVerdict::Fork {
+                    conflict_name,
+                    forks,
+                } => {
                     if let Some(fork) = forks.first() {
                         provenance.record_selection(
                             context.contested_package.name(),
@@ -1164,8 +1207,8 @@ fn get_dependencies(
                             if pkg.name() == context.contested_package.name() {
                                 let mut new_range = Ranges::full();
                                 if let Some(lower) = &fork.lower {
-                                    new_range = new_range
-                                        .intersection(&Ranges::higher_than(lower.clone()));
+                                    new_range =
+                                        new_range.intersection(&Ranges::higher_than(lower.clone()));
                                 }
                                 if let Some(upper) = &fork.upper {
                                     if fork.upper_inclusive {
@@ -1214,8 +1257,8 @@ fn get_dependencies(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vyp_index::OfflineMetadataProvider;
     use vyp_api::{ComparisonOp, Requirement};
+    use vyp_index::OfflineMetadataProvider;
 
     fn setup_simple_graph() -> OfflineMetadataProvider {
         let mut provider = OfflineMetadataProvider::new();
@@ -1226,19 +1269,15 @@ mod tests {
         provider.add_package(
             "dropdown",
             VypVersion::from_parts(1, 0, 0),
-            vec![Requirement::new("icons").with_constraint(
-                ComparisonOp::Gte,
-                VypVersion::from_parts(1, 0, 0),
-            )],
+            vec![Requirement::new("icons")
+                .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0))],
         );
 
         provider.add_package(
             "menu",
             VypVersion::from_parts(1, 0, 0),
-            vec![Requirement::new("dropdown").with_constraint(
-                ComparisonOp::Gte,
-                VypVersion::from_parts(1, 0, 0),
-            )],
+            vec![Requirement::new("dropdown")
+                .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0))],
         );
 
         provider
@@ -1250,16 +1289,12 @@ mod tests {
         let result = ResolverBuilder::new()
             .with_provider(Box::new(offline))
             .add_dependency(
-                Requirement::new("menu").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("menu")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .add_dependency(
-                Requirement::new("icons").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("icons")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .resolve()
             .unwrap();
@@ -1283,34 +1318,26 @@ mod tests {
         provider.add_package(
             "pkg-a",
             VypVersion::from_parts(1, 0, 0),
-            vec![Requirement::new("numpy").with_constraint(
-                ComparisonOp::Lt,
-                VypVersion::from_parts(2, 0, 0),
-            )],
+            vec![Requirement::new("numpy")
+                .with_constraint(ComparisonOp::Lt, VypVersion::from_parts(2, 0, 0))],
         );
 
         provider.add_package(
             "pkg-b",
             VypVersion::from_parts(1, 0, 0),
-            vec![Requirement::new("numpy").with_constraint(
-                ComparisonOp::Gte,
-                VypVersion::from_parts(2, 0, 0),
-            )],
+            vec![Requirement::new("numpy")
+                .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(2, 0, 0))],
         );
 
         let result = ResolverBuilder::new()
             .with_provider(Box::new(provider))
             .add_dependency(
-                Requirement::new("pkg-a").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("pkg-a")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .add_dependency(
-                Requirement::new("pkg-b").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("pkg-b")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .resolve();
 
@@ -1348,16 +1375,12 @@ mod tests {
         let result = ResolverBuilder::new()
             .with_provider(Box::new(provider))
             .add_dependency(
-                Requirement::new("a").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("a")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .add_dependency(
-                Requirement::new("b").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("b")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .resolve()
             .unwrap();
@@ -1372,10 +1395,8 @@ mod tests {
         let result = ResolverBuilder::new()
             .with_provider(Box::new(offline))
             .add_dependency(
-                Requirement::new("menu").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("menu")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .resolve()
             .unwrap();
@@ -1404,10 +1425,8 @@ mod tests {
         provider.add_package_with_conflicts(
             "pkg-a",
             VypVersion::from_parts(1, 0, 0),
-            vec![Requirement::new("numpy").with_constraint(
-                ComparisonOp::Gte,
-                VypVersion::from_parts(1, 0, 0),
-            )],
+            vec![Requirement::new("numpy")
+                .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0))],
             pkg_a_conflicts,
         );
 
@@ -1415,14 +1434,10 @@ mod tests {
             "pkg-b",
             VypVersion::from_parts(1, 0, 0),
             vec![
-                Requirement::new("pkg-a").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
-                Requirement::new("numpy").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("pkg-a")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
+                Requirement::new("numpy")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             ],
         );
 
@@ -1432,10 +1447,8 @@ mod tests {
         let result = ResolverBuilder::new()
             .with_provider(Box::new(provider))
             .add_dependency(
-                Requirement::new("pkg-b").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("pkg-b")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .resolve()
             .unwrap();
@@ -1444,14 +1457,11 @@ mod tests {
         assert!(result.packages.contains_key("pkg_b"));
         assert!(result.packages.contains_key("numpy"));
 
-        let has_inherited = result
-            .inherited_conflicts
-            .values()
-            .any(|cs| {
-                cs.declarations
-                    .iter()
-                    .any(|d| d.name == "numpy-device" && d.transitive)
-            });
+        let has_inherited = result.inherited_conflicts.values().any(|cs| {
+            cs.declarations
+                .iter()
+                .any(|d| d.name == "numpy-device" && d.transitive)
+        });
         assert!(has_inherited, "Transitive conflict should be inherited");
     }
 
@@ -1465,39 +1475,29 @@ mod tests {
         provider.add_package(
             "pkg-a",
             VypVersion::from_parts(1, 0, 0),
-            vec![Requirement::new("numpy").with_constraint(
-                ComparisonOp::Lt,
-                VypVersion::from_parts(2, 0, 0),
-            )],
+            vec![Requirement::new("numpy")
+                .with_constraint(ComparisonOp::Lt, VypVersion::from_parts(2, 0, 0))],
         );
 
         provider.add_package(
             "pkg-b",
             VypVersion::from_parts(1, 0, 0),
-            vec![Requirement::new("numpy").with_constraint(
-                ComparisonOp::Gte,
-                VypVersion::from_parts(1, 0, 0),
-            )],
+            vec![Requirement::new("numpy")
+                .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0))],
         );
 
-        let overrides = vec![
-            DependencyOverride::new("numpy", ">=1.26,<2"),
-        ];
+        let overrides = vec![DependencyOverride::new("numpy", ">=1.26,<2")];
 
         let result = ResolverBuilder::new()
             .with_provider(Box::new(provider))
             .with_overrides(overrides)
             .add_dependency(
-                Requirement::new("pkg-a").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("pkg-a")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .add_dependency(
-                Requirement::new("pkg-b").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("pkg-b")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .resolve()
             .unwrap();
@@ -1513,7 +1513,11 @@ mod tests {
         let mut provider = OfflineMetadataProvider::new();
 
         provider.add_package("opencv_python", VypVersion::from_parts(4, 9, 0), vec![]);
-        provider.add_package("opencv_python_headless", VypVersion::from_parts(4, 9, 0), vec![]);
+        provider.add_package(
+            "opencv_python_headless",
+            VypVersion::from_parts(4, 9, 0),
+            vec![],
+        );
 
         let substitutions = vec![SubstitutionSet::new(
             "opencv",
@@ -1525,10 +1529,8 @@ mod tests {
             .with_provider(Box::new(provider))
             .with_substitutions(substitutions)
             .add_dependency(
-                Requirement::new("opencv_python_headless").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(4, 0, 0),
-                ),
+                Requirement::new("opencv_python_headless")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(4, 0, 0)),
             )
             .resolve()
             .unwrap();
@@ -1555,43 +1557,33 @@ mod tests {
         provider.add_package(
             "a",
             VypVersion::from_parts(2, 0, 0),
-            vec![Requirement::new("c").with_constraint(
-                ComparisonOp::Gte,
-                VypVersion::from_parts(2, 0, 0),
-            )],
+            vec![Requirement::new("c")
+                .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(2, 0, 0))],
         );
         provider.add_package(
             "a",
             VypVersion::from_parts(1, 0, 0),
-            vec![Requirement::new("c").with_constraint(
-                ComparisonOp::Gte,
-                VypVersion::from_parts(1, 0, 0),
-            )],
+            vec![Requirement::new("c")
+                .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0))],
         );
 
         provider.add_package(
             "b",
             VypVersion::from_parts(1, 0, 0),
-            vec![Requirement::new("c").with_constraint(
-                ComparisonOp::Lt,
-                VypVersion::from_parts(2, 0, 0),
-            )],
+            vec![Requirement::new("c")
+                .with_constraint(ComparisonOp::Lt, VypVersion::from_parts(2, 0, 0))],
         );
 
         std::env::set_var("VYP_PROFILE", "1");
         let result = ResolverBuilder::new()
             .with_provider(Box::new(provider))
             .add_dependency(
-                Requirement::new("a").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("a")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .add_dependency(
-                Requirement::new("b").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("b")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .resolve()
             .unwrap();
@@ -1637,60 +1629,46 @@ mod tests {
         provider.add_package(
             "b",
             VypVersion::from_parts(2, 0, 0),
-            vec![Requirement::new("c").with_constraint(
-                ComparisonOp::Gte,
-                VypVersion::from_parts(3, 0, 0),
-            )],
+            vec![Requirement::new("c")
+                .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(3, 0, 0))],
         );
         provider.add_package(
             "b",
             VypVersion::from_parts(1, 0, 0),
-            vec![Requirement::new("c").with_constraint(
-                ComparisonOp::Gte,
-                VypVersion::from_parts(1, 0, 0),
-            )],
+            vec![Requirement::new("c")
+                .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0))],
         );
 
         provider.add_package(
             "a",
             VypVersion::from_parts(2, 0, 0),
-            vec![Requirement::new("b").with_constraint(
-                ComparisonOp::Gte,
-                VypVersion::from_parts(2, 0, 0),
-            )],
+            vec![Requirement::new("b")
+                .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(2, 0, 0))],
         );
         provider.add_package(
             "a",
             VypVersion::from_parts(1, 0, 0),
-            vec![Requirement::new("b").with_constraint(
-                ComparisonOp::Gte,
-                VypVersion::from_parts(1, 0, 0),
-            )],
+            vec![Requirement::new("b")
+                .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0))],
         );
 
         provider.add_package(
             "d",
             VypVersion::from_parts(1, 0, 0),
-            vec![Requirement::new("c").with_constraint(
-                ComparisonOp::Lt,
-                VypVersion::from_parts(3, 0, 0),
-            )],
+            vec![Requirement::new("c")
+                .with_constraint(ComparisonOp::Lt, VypVersion::from_parts(3, 0, 0))],
         );
 
         std::env::set_var("VYP_PROFILE", "1");
         let result = ResolverBuilder::new()
             .with_provider(Box::new(provider))
             .add_dependency(
-                Requirement::new("a").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("a")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .add_dependency(
-                Requirement::new("d").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("d")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .resolve()
             .unwrap();
@@ -1728,66 +1706,50 @@ mod tests {
         provider.add_package(
             "a",
             VypVersion::from_parts(3, 0, 0),
-            vec![Requirement::new("d").with_constraint(
-                ComparisonOp::Gte,
-                VypVersion::from_parts(3, 0, 0),
-            )],
+            vec![Requirement::new("d")
+                .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(3, 0, 0))],
         );
         provider.add_package(
             "a",
             VypVersion::from_parts(2, 0, 0),
-            vec![Requirement::new("d").with_constraint(
-                ComparisonOp::Gte,
-                VypVersion::from_parts(2, 0, 0),
-            )],
+            vec![Requirement::new("d")
+                .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(2, 0, 0))],
         );
         provider.add_package(
             "a",
             VypVersion::from_parts(1, 0, 0),
-            vec![Requirement::new("d").with_constraint(
-                ComparisonOp::Gte,
-                VypVersion::from_parts(1, 0, 0),
-            )],
+            vec![Requirement::new("d")
+                .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0))],
         );
 
         provider.add_package(
             "b",
             VypVersion::from_parts(1, 0, 0),
-            vec![Requirement::new("d").with_constraint(
-                ComparisonOp::Lt,
-                VypVersion::from_parts(3, 0, 0),
-            )],
+            vec![Requirement::new("d")
+                .with_constraint(ComparisonOp::Lt, VypVersion::from_parts(3, 0, 0))],
         );
 
         provider.add_package(
             "c",
             VypVersion::from_parts(1, 0, 0),
-            vec![Requirement::new("d").with_constraint(
-                ComparisonOp::Lt,
-                VypVersion::from_parts(2, 0, 0),
-            )],
+            vec![Requirement::new("d")
+                .with_constraint(ComparisonOp::Lt, VypVersion::from_parts(2, 0, 0))],
         );
 
         std::env::set_var("VYP_PROFILE", "1");
         let result = ResolverBuilder::new()
             .with_provider(Box::new(provider))
             .add_dependency(
-                Requirement::new("a").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("a")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .add_dependency(
-                Requirement::new("b").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("b")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .add_dependency(
-                Requirement::new("c").with_constraint(
-                    ComparisonOp::Gte,
-                    VypVersion::from_parts(1, 0, 0),
-                ),
+                Requirement::new("c")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(1, 0, 0)),
             )
             .resolve()
             .unwrap();
@@ -1830,8 +1792,14 @@ mod tests {
             ("urllib3 (<3,>=1.21.1)", true),
             ("certifi (>=2017.4.17)", true),
             (r#"PySocks (!=1.5.7,>=1.5.6) ; extra == "socks""#, false),
-            (r#"chardet (<6,>=3.0.2) ; extra == "use_chardet_on_py3""#, false),
-            (r#"brotli (>=1.0.9) ; platform_python_implementation == "CPython" and extra == "brotli""#, false),
+            (
+                r#"chardet (<6,>=3.0.2) ; extra == "use_chardet_on_py3""#,
+                false,
+            ),
+            (
+                r#"brotli (>=1.0.9) ; platform_python_implementation == "CPython" and extra == "brotli""#,
+                false,
+            ),
             (r#"h2 (<5,>=4) ; extra == "h2""#, false),
         ];
 
@@ -1871,7 +1839,11 @@ mod override_and_errata_tests {
     #[test]
     fn range_override_applies_without_inherited_conflicts() {
         let mut p = numpy_provider();
-        p.add_package("pkg-b", v(1, 0), vec![req("numpy", ComparisonOp::Gte, v(1, 0))]);
+        p.add_package(
+            "pkg-b",
+            v(1, 0),
+            vec![req("numpy", ComparisonOp::Gte, v(1, 0))],
+        );
 
         let result = ResolverBuilder::new()
             .with_provider(Box::new(p))
@@ -1888,8 +1860,16 @@ mod override_and_errata_tests {
         // lib-a wants numpy>=1.26 and lib-b wants numpy<1.25: unsolvable
         // unless the override replaces both requirements.
         let mut p = numpy_provider();
-        p.add_package("lib-a", v(1, 0), vec![req("numpy", ComparisonOp::Gte, v(1, 26))]);
-        p.add_package("lib-b", v(1, 0), vec![req("numpy", ComparisonOp::Lt, v(1, 25))]);
+        p.add_package(
+            "lib-a",
+            v(1, 0),
+            vec![req("numpy", ComparisonOp::Gte, v(1, 26))],
+        );
+        p.add_package(
+            "lib-b",
+            v(1, 0),
+            vec![req("numpy", ComparisonOp::Lt, v(1, 25))],
+        );
 
         let result = ResolverBuilder::new()
             .with_provider(Box::new(p))
@@ -1980,9 +1960,12 @@ mod inherited_override_tests {
         let mut p = OfflineMetadataProvider::new();
         p.add_package("libx", VypVersion::from_parts(1, 0, 0), vec![]);
         p.add_package("libx", VypVersion::from_parts(2, 0, 0), vec![]);
-        p.add_package("lib-a", VypVersion::from_parts(1, 0, 0), vec![
-            Requirement::new("libx").with_constraint(ComparisonOp::Lt, VypVersion::from_parts(2, 0, 0)),
-        ]);
+        p.add_package(
+            "lib-a",
+            VypVersion::from_parts(1, 0, 0),
+            vec![Requirement::new("libx")
+                .with_constraint(ComparisonOp::Lt, VypVersion::from_parts(2, 0, 0))],
+        );
 
         let mut inherited = DependencyOverride::new("libx", "<2").inherit_through("lib-a");
         inherited.transitive = true;
@@ -1994,7 +1977,8 @@ mod inherited_override_tests {
             .with_overrides(vec![inherited])
             .add_dependency(Requirement::new("lib-a"))
             .add_dependency(
-                Requirement::new("libx").with_constraint(ComparisonOp::Gte, VypVersion::from_parts(2, 0, 0)),
+                Requirement::new("libx")
+                    .with_constraint(ComparisonOp::Gte, VypVersion::from_parts(2, 0, 0)),
             )
             .resolve();
         assert!(err.is_err());
@@ -2009,8 +1993,16 @@ mod pre_release_tests {
 
     fn provider() -> OfflineMetadataProvider {
         let mut p = OfflineMetadataProvider::new();
-        p.add_package("torch", "2.5.0".parse().unwrap(), vec![Requirement::new("sympy")]);
-        p.add_package("torch", "2.6.0rc1".parse().unwrap(), vec![Requirement::new("sympy")]);
+        p.add_package(
+            "torch",
+            "2.5.0".parse().unwrap(),
+            vec![Requirement::new("sympy")],
+        );
+        p.add_package(
+            "torch",
+            "2.6.0rc1".parse().unwrap(),
+            vec![Requirement::new("sympy")],
+        );
         p.add_package("sympy", "1.12.0".parse().unwrap(), vec![]);
         p.add_package("sympy", "1.13.0a1".parse().unwrap(), vec![]);
         p
@@ -2052,7 +2044,11 @@ mod backtrack_tests {
     }
 
     fn resolve(p: OfflineMetadataProvider, deps: Vec<Requirement>) -> ResolutionResult {
-        ResolverBuilder::new().with_provider(Box::new(p)).add_dependencies(deps).resolve().unwrap()
+        ResolverBuilder::new()
+            .with_provider(Box::new(p))
+            .add_dependencies(deps)
+            .resolve()
+            .unwrap()
     }
 
     #[test]
@@ -2062,17 +2058,31 @@ mod backtrack_tests {
         p.add_package("libx", v("2.0"), vec![]);
         // green 3.x never bounded libx; 4.x learned it breaks on libx 2.
         p.add_package("green", v("3.9"), vec![Requirement::new("libx")]);
-        p.add_package("green", v("4.0"), vec![Requirement::new("libx").with_constraint(ComparisonOp::Lt, v("2"))]);
-        p.add_package("green", v("4.1"), vec![Requirement::new("libx").with_constraint(ComparisonOp::Lt, v("2"))]);
+        p.add_package(
+            "green",
+            v("4.0"),
+            vec![Requirement::new("libx").with_constraint(ComparisonOp::Lt, v("2"))],
+        );
+        p.add_package(
+            "green",
+            v("4.1"),
+            vec![Requirement::new("libx").with_constraint(ComparisonOp::Lt, v("2"))],
+        );
 
-        let result = resolve(p, vec![
-            Requirement::new("green"),
-            Requirement::new("libx").with_constraint(ComparisonOp::Gte, v("2")),
-        ]);
+        let result = resolve(
+            p,
+            vec![
+                Requirement::new("green"),
+                Requirement::new("libx").with_constraint(ComparisonOp::Gte, v("2")),
+            ],
+        );
         assert_eq!(result.packages["green"], v("3.9"));
         assert_eq!(result.backtracks.len(), 1, "{:?}", result.backtracks);
         let w = &result.backtracks[0];
-        assert_eq!((w.package.as_str(), w.dependency.as_str(), w.skipped), ("green", "libx", 1));
+        assert_eq!(
+            (w.package.as_str(), w.dependency.as_str(), w.skipped),
+            ("green", "libx", 1)
+        );
         assert_eq!(w.newest, v("4.1"));
         assert!(w.describe().contains("libx<2"), "{}", w.describe());
     }
@@ -2082,11 +2092,18 @@ mod backtrack_tests {
         let mut p = OfflineMetadataProvider::new();
         p.add_package("libx", v("2.0"), vec![]);
         p.add_package("green", v("3.9"), vec![Requirement::new("libx")]);
-        p.add_package("green", v("4.1"), vec![Requirement::new("libx").with_constraint(ComparisonOp::Lt, v("2"))]);
-        let result = resolve(p, vec![
-            Requirement::new("green").with_constraint(ComparisonOp::Lt, v("4")),
-            Requirement::new("libx"),
-        ]);
+        p.add_package(
+            "green",
+            v("4.1"),
+            vec![Requirement::new("libx").with_constraint(ComparisonOp::Lt, v("2"))],
+        );
+        let result = resolve(
+            p,
+            vec![
+                Requirement::new("green").with_constraint(ComparisonOp::Lt, v("4")),
+                Requirement::new("libx"),
+            ],
+        );
         assert!(result.backtracks.is_empty(), "{:?}", result.backtracks);
     }
 
@@ -2096,11 +2113,18 @@ mod backtrack_tests {
         p.add_package("libx", v("1.0"), vec![]);
         p.add_package("libx", v("2.0"), vec![]);
         p.add_package("green", v("3.9"), vec![Requirement::new("libx")]);
-        p.add_package("green", v("4.1"), vec![Requirement::new("libx").with_constraint(ComparisonOp::Gte, v("2"))]);
-        let result = resolve(p, vec![
-            Requirement::new("green"),
-            Requirement::new("libx").with_constraint(ComparisonOp::Lt, v("2")),
-        ]);
+        p.add_package(
+            "green",
+            v("4.1"),
+            vec![Requirement::new("libx").with_constraint(ComparisonOp::Gte, v("2"))],
+        );
+        let result = resolve(
+            p,
+            vec![
+                Requirement::new("green"),
+                Requirement::new("libx").with_constraint(ComparisonOp::Lt, v("2")),
+            ],
+        );
         assert_eq!(result.packages["green"], v("3.9"));
         assert!(result.backtracks.is_empty(), "{:?}", result.backtracks);
     }

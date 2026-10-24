@@ -54,7 +54,10 @@ pub struct HostRecord {
 
 impl HostRecord {
     pub fn current() -> Self {
-        Self { os: std::env::consts::OS.to_string(), arch: std::env::consts::ARCH.to_string() }
+        Self {
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+        }
     }
 }
 
@@ -72,13 +75,19 @@ fn now_rfc3339() -> String {
 
 fn write(path: &Path, content: &str) -> miette::Result<()> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| miette::miette!("Failed to create {}: {}", dir.display(), e))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| miette::miette!("Failed to create {}: {}", dir.display(), e))?;
     }
-    std::fs::write(path, content).map_err(|e| miette::miette!("Failed to write {}: {}", path.display(), e))
+    std::fs::write(path, content)
+        .map_err(|e| miette::miette!("Failed to write {}: {}", path.display(), e))
 }
 
 /// Record the interpreter and host a new environment was created for.
-pub fn record_creation(root: &Path, interp: &Interpreter, opts: &VenvOptions) -> miette::Result<()> {
+pub fn record_creation(
+    root: &Path,
+    interp: &Interpreter,
+    opts: &VenvOptions,
+) -> miette::Result<()> {
     write(&info_dir(root).join("MANAGER"), &format!("{}\n", MANAGER))?;
     let record = EnvironmentRecord {
         vyp_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -93,7 +102,10 @@ pub fn record_creation(root: &Path, interp: &Interpreter, opts: &VenvOptions) ->
         },
         host: HostRecord::current(),
     };
-    write(&record_path(root), &toml::to_string_pretty(&record).unwrap_or_default())
+    write(
+        &record_path(root),
+        &toml::to_string_pretty(&record).unwrap_or_default(),
+    )
 }
 
 pub fn read_record(root: &Path) -> Option<EnvironmentRecord> {
@@ -121,7 +133,10 @@ pub fn record_install(layout: &VenvLayout, lock: &LockFile) -> miette::Result<()
     let mut record = read_record(root).unwrap_or_else(|| record_from_pyvenv_cfg(root));
     record.updated = Some(now_rfc3339());
     record.vyp_version = env!("CARGO_PKG_VERSION").to_string();
-    write(&record_path(root), &toml::to_string_pretty(&record).unwrap_or_default())
+    write(
+        &record_path(root),
+        &toml::to_string_pretty(&record).unwrap_or_default(),
+    )
 }
 
 fn record_from_pyvenv_cfg(root: &Path) -> EnvironmentRecord {
@@ -143,7 +158,11 @@ fn record_from_pyvenv_cfg(root: &Path) -> EnvironmentRecord {
                 .or_else(|| cfg.get("version_info"))
                 .cloned()
                 .unwrap_or_default(),
-            implementation: cfg.get("implementation").cloned().unwrap_or_else(|| "cpython".into()).to_lowercase(),
+            implementation: cfg
+                .get("implementation")
+                .cloned()
+                .unwrap_or_else(|| "cpython".into())
+                .to_lowercase(),
             free_threaded: false,
         },
         host: HostRecord::current(),
@@ -156,27 +175,55 @@ pub enum Drift {
     /// The base interpreter the venv links to no longer exists.
     InterpreterMissing(PathBuf),
     /// The base interpreter now reports a different version.
-    InterpreterChanged { executable: PathBuf, was: String, now: String },
+    InterpreterChanged {
+        executable: PathBuf,
+        was: String,
+        now: String,
+    },
     /// The venv was created on a different OS or CPU architecture.
-    HostChanged { was: HostRecord, now: HostRecord },
+    HostChanged {
+        was: HostRecord,
+        now: HostRecord,
+    },
     /// Another tool claims the environment.
     OtherManager(String),
     /// Installed packages differ from the last vyp snapshot.
-    PackageMissing { name: String, version: String },
-    PackageChanged { name: String, snapshot: String, installed: String },
-    PackageAdded { name: String, version: String },
+    PackageMissing {
+        name: String,
+        version: String,
+    },
+    PackageChanged {
+        name: String,
+        snapshot: String,
+        installed: String,
+    },
+    PackageAdded {
+        name: String,
+        version: String,
+    },
 }
 
 impl Drift {
     /// Drift that makes installing into the environment unsafe.
     pub fn is_fatal(&self) -> bool {
-        matches!(self, Self::InterpreterMissing(_) | Self::InterpreterChanged { .. } | Self::HostChanged { .. })
+        matches!(
+            self,
+            Self::InterpreterMissing(_)
+                | Self::InterpreterChanged { .. }
+                | Self::HostChanged { .. }
+        )
     }
 
     pub fn describe(&self) -> String {
         match self {
-            Self::InterpreterMissing(p) => format!("base interpreter {} no longer exists", p.display()),
-            Self::InterpreterChanged { executable, was, now } => format!(
+            Self::InterpreterMissing(p) => {
+                format!("base interpreter {} no longer exists", p.display())
+            }
+            Self::InterpreterChanged {
+                executable,
+                was,
+                now,
+            } => format!(
                 "base interpreter {} changed from Python {} to {}",
                 executable.display(),
                 was,
@@ -187,11 +234,22 @@ impl Drift {
                 was.os, was.arch, now.os, now.arch
             ),
             Self::OtherManager(m) => format!("managed by {} (venv-info/MANAGER)", m),
-            Self::PackageMissing { name, version } => format!("{}=={} is in the snapshot but not installed", name, version),
-            Self::PackageChanged { name, snapshot, installed } => {
-                format!("{} is {} but the snapshot has {}", name, installed, snapshot)
+            Self::PackageMissing { name, version } => {
+                format!("{}=={} is in the snapshot but not installed", name, version)
             }
-            Self::PackageAdded { name, version } => format!("{}=={} was installed outside vyp", name, version),
+            Self::PackageChanged {
+                name,
+                snapshot,
+                installed,
+            } => {
+                format!(
+                    "{} is {} but the snapshot has {}",
+                    name, installed, snapshot
+                )
+            }
+            Self::PackageAdded { name, version } => {
+                format!("{}=={} was installed outside vyp", name, version)
+            }
         }
     }
 }
@@ -220,7 +278,10 @@ pub fn check(layout: &VenvLayout) -> Vec<Drift> {
 
     let host = HostRecord::current();
     if record.host != host {
-        drift.push(Drift::HostChanged { was: record.host.clone(), now: host });
+        drift.push(Drift::HostChanged {
+            was: record.host.clone(),
+            now: host,
+        });
     }
 
     if let Some(m) = manager(root).filter(|m| m != MANAGER) {
@@ -242,7 +303,10 @@ pub fn check(layout: &VenvLayout) -> Vec<Drift> {
             .collect();
         for (name, version) in &expected {
             match installed.get(name) {
-                None => drift.push(Drift::PackageMissing { name: name.clone(), version: version.clone() }),
+                None => drift.push(Drift::PackageMissing {
+                    name: name.clone(),
+                    version: version.clone(),
+                }),
                 Some(v) if v != version => drift.push(Drift::PackageChanged {
                     name: name.clone(),
                     snapshot: version.clone(),
@@ -252,8 +316,13 @@ pub fn check(layout: &VenvLayout) -> Vec<Drift> {
             }
         }
         for (name, version) in &installed {
-            if !expected.contains_key(name) && !matches!(name.as_str(), "pip" | "setuptools" | "wheel") {
-                drift.push(Drift::PackageAdded { name: name.clone(), version: version.clone() });
+            if !expected.contains_key(name)
+                && !matches!(name.as_str(), "pip" | "setuptools" | "wheel")
+            {
+                drift.push(Drift::PackageAdded {
+                    name: name.clone(),
+                    version: version.clone(),
+                });
             }
         }
     }
@@ -263,7 +332,11 @@ pub fn check(layout: &VenvLayout) -> Vec<Drift> {
 /// Before installing: refuse a stale environment, warn about another manager.
 pub fn preflight(layout: &VenvLayout) -> miette::Result<()> {
     let drift = check(layout);
-    let fatal: Vec<String> = drift.iter().filter(|d| d.is_fatal()).map(Drift::describe).collect();
+    let fatal: Vec<String> = drift
+        .iter()
+        .filter(|d| d.is_fatal())
+        .map(Drift::describe)
+        .collect();
     if !fatal.is_empty() {
         return Err(miette::miette!(
             "The virtual environment at {} is stale:\n  {}\nRecreate it with `vyp venv --clear {}`.",
@@ -297,7 +370,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn detects_missing_interpreter_host_change_and_other_manager() {
-        let Some(interp) = crate::python::find(&crate::python::PythonRequest::Any, None) else { return };
+        let Some(interp) = crate::python::find(&crate::python::PythonRequest::Any, None) else {
+            return;
+        };
         let dir = scratch("drift");
         let layout = super::super::create(&dir, &interp, &VenvOptions::default()).unwrap();
         assert!(check(&layout).is_empty(), "{:?}", check(&layout));
@@ -305,11 +380,17 @@ mod tests {
         let mut record = read_record(&dir).unwrap();
         record.interpreter.executable = dir.join("gone/python3");
         record.host.arch = "sparc".into();
-        write(&record_path(&dir), &toml::to_string_pretty(&record).unwrap()).unwrap();
+        write(
+            &record_path(&dir),
+            &toml::to_string_pretty(&record).unwrap(),
+        )
+        .unwrap();
         write(&info_dir(&dir).join("MANAGER"), "other-tool\n").unwrap();
 
         let drift = check(&layout);
-        assert!(drift.iter().any(|d| matches!(d, Drift::InterpreterMissing(_))));
+        assert!(drift
+            .iter()
+            .any(|d| matches!(d, Drift::InterpreterMissing(_))));
         assert!(drift.iter().any(|d| matches!(d, Drift::HostChanged { .. })));
         assert!(drift.contains(&Drift::OtherManager("other-tool".into())));
         assert!(preflight(&layout).is_err());

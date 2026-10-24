@@ -1,5 +1,5 @@
-use clap::{Args, Subcommand};
 use crate::cache::wheel_cache::cache_base_dir;
+use clap::{Args, Subcommand};
 
 #[derive(Args)]
 pub struct CacheArgs {
@@ -96,7 +96,11 @@ fn run_clean(packages: Option<Vec<String>>) -> miette::Result<()> {
                 }
             }
         }
-        println!("Removed {} entries for packages: {}", removed, names.join(", "));
+        println!(
+            "Removed {} entries for packages: {}",
+            removed,
+            names.join(", ")
+        );
     } else {
         let before = dir_size(&base);
         let _ = std::fs::remove_dir_all(&base);
@@ -130,7 +134,8 @@ fn run_prune() -> miette::Result<()> {
                     continue;
                 }
                 if let Ok(meta) = entry.metadata() {
-                    let modified = meta.modified()
+                    let modified = meta
+                        .modified()
                         .ok()
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                         .map(|d| d.as_secs())

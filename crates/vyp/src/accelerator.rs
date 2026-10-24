@@ -106,7 +106,10 @@ pub fn backend_index_url(backend: &AcceleratorBackend) -> Option<&'static str> {
 fn detect_cuda() -> Option<AcceleratorBackend> {
     // Try nvidia-smi first (works on Linux, Windows, WSL)
     if let Ok(output) = Command::new("nvidia-smi")
-        .args(["--query-gpu=driver_version", "--format=csv,noheader,nounits"])
+        .args([
+            "--query-gpu=driver_version",
+            "--format=csv,noheader,nounits",
+        ])
         .output()
     {
         if output.status.success() {

@@ -1,9 +1,9 @@
 use vyp_api::traits::conflict_strategy::{
     ConflictContext, ConflictStrategy, ConflictSuggestion, RangeRewrite, StrategyVerdict,
 };
-use vyp_api::DependencyOverride;
-use vyp_api::types::requirement::ComparisonOp;
 use vyp_api::types::provenance::SelectionReason;
+use vyp_api::types::requirement::ComparisonOp;
+use vyp_api::DependencyOverride;
 use vyp_api::VypVersion;
 
 /// Built-in strategy that applies range-based dependency overrides.
@@ -81,10 +81,7 @@ impl ConflictStrategy for OverrideConflictStrategy {
         vec![ConflictSuggestion {
             source: self.name().to_string(),
             message: format!("Add an override for '{}'", pkg_name),
-            command: Some(format!(
-                "vyp override add {} \"<version_spec>\"",
-                pkg_name
-            )),
+            command: Some(format!("vyp override add {} \"<version_spec>\"", pkg_name)),
         }]
     }
 

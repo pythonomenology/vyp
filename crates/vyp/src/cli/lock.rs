@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use vyp_core::ResolveProgress;
 
+use super::common::{resolve_from_config, ResolveOut};
 use crate::config::settings::VypConfig;
 use crate::lock::lockfile::LockFile;
-use super::common::{resolve_from_config, ResolveOut};
 
 #[derive(Args)]
 pub struct LockArgs {
@@ -72,10 +72,7 @@ pub fn run(args: LockArgs) -> miette::Result<()> {
                     if has_printed.load(Ordering::Relaxed) {
                         let _ = write!(stderr, "\x1b[2K\r");
                     }
-                    let _ = writeln!(
-                        stderr,
-                        "Resolved {package_count} packages in {elapsed:.2}s"
-                    );
+                    let _ = writeln!(stderr, "Resolved {package_count} packages in {elapsed:.2}s");
                     let _ = stderr.flush();
                 }
                 _ => {}
@@ -101,7 +98,12 @@ pub fn run(args: LockArgs) -> miette::Result<()> {
             }
             LockFile::from_resolution(result)
         }
-        ResolveOut::Universal { entries, environments, errata_feeds, exclude_newer } => {
+        ResolveOut::Universal {
+            entries,
+            environments,
+            errata_feeds,
+            exclude_newer,
+        } => {
             if !is_tty {
                 let elapsed = start.elapsed();
                 eprintln!(
@@ -134,9 +136,9 @@ pub fn run(args: LockArgs) -> miette::Result<()> {
 
 fn lock_script(script: &std::path::Path, exclude_newer: Option<&str>) -> miette::Result<()> {
     let meta = super::run::read_metadata(script)?;
-    let block = meta
-        .script
-        .ok_or_else(|| miette::miette!("{} has no `# /// script` metadata block", script.display()))?;
+    let block = meta.script.ok_or_else(|| {
+        miette::miette!("{} has no `# /// script` metadata block", script.display())
+    })?;
     let mut config = super::run::script_config(script, &block, &[])?;
     if let Some(cutoff) = exclude_newer {
         config.set_exclude_newer(cutoff)?;
@@ -151,9 +153,15 @@ fn lock_script(script: &std::path::Path, exclude_newer: Option<&str>) -> miette:
     let (out, _) = resolve_from_config(&config, &[], None, None)?;
     let lockfile = match out {
         ResolveOut::Single(result) => LockFile::from_resolution(&result),
-        ResolveOut::Universal { .. } => return Err(miette::miette!("Scripts can't use [tool.vyp] environments")),
+        ResolveOut::Universal { .. } => {
+            return Err(miette::miette!("Scripts can't use [tool.vyp] environments"))
+        }
     };
     super::run::write_script_lock(script, &lockfile)?;
-    println!("Locked {} packages into {}", lockfile.packages.len(), script.display());
+    println!(
+        "Locked {} packages into {}",
+        lockfile.packages.len(),
+        script.display()
+    );
     Ok(())
 }

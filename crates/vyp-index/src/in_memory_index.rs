@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use vyp_api::{VypVersion, Requirement};
 use vyp_api::traits::metadata_provider::PackageMetadata;
+use vyp_api::{Requirement, VypVersion};
 
 /// Thread-safe in-memory index that bridges the solver thread and the
 /// background fetcher. The solver calls `wait_blocking` to get data, and
@@ -122,7 +122,11 @@ impl<T> Slot<T> {
     }
 
     fn try_get(&self) -> Option<Arc<T>> {
-        self.value.lock().expect("poisoned").as_ref().map(Arc::clone)
+        self.value
+            .lock()
+            .expect("poisoned")
+            .as_ref()
+            .map(Arc::clone)
     }
 }
 
@@ -146,7 +150,8 @@ impl InMemoryIndex {
     }
 
     pub fn wait_versions(&self, package: &str) -> Arc<VersionsResult> {
-        let slot = self.versions
+        let slot = self
+            .versions
             .entry(package.to_string())
             .or_insert_with(|| Arc::new(Slot::new()))
             .clone();
@@ -160,11 +165,15 @@ impl InMemoryIndex {
 
     pub fn get_wheel_info(&self, package: &str, version: &VypVersion) -> Option<Vec<WheelInfo>> {
         let entry = self.versions.get(package)?;
-        entry.value().try_get().and_then(|r| r.wheel_info.get(version).cloned())
+        entry
+            .value()
+            .try_get()
+            .and_then(|r| r.wheel_info.get(version).cloned())
     }
 
     pub fn set_versions(&self, package: &str, result: VersionsResult) {
-        let slot = self.versions
+        let slot = self
+            .versions
             .entry(package.to_string())
             .or_insert_with(|| Arc::new(Slot::new()))
             .clone();
@@ -184,7 +193,8 @@ impl InMemoryIndex {
 
     pub fn wait_metadata(&self, package: &str, version: &VypVersion) -> Arc<MetadataResult> {
         let key = (package.to_string(), version.clone());
-        let slot = self.metadata
+        let slot = self
+            .metadata
             .entry(key)
             .or_insert_with(|| Arc::new(Slot::new()))
             .clone();
@@ -201,14 +211,10 @@ impl InMemoryIndex {
         entry.value().try_get()
     }
 
-    pub fn set_metadata(
-        &self,
-        package: &str,
-        version: &VypVersion,
-        result: MetadataResult,
-    ) {
+    pub fn set_metadata(&self, package: &str, version: &VypVersion, result: MetadataResult) {
         let key = (package.to_string(), version.clone());
-        let slot = self.metadata
+        let slot = self
+            .metadata
             .entry(key)
             .or_insert_with(|| Arc::new(Slot::new()))
             .clone();
@@ -228,19 +234,27 @@ pub struct VersionsClaim {
 
 impl VersionsClaim {
     pub fn new(index: Arc<InMemoryIndex>, package: &str) -> Self {
-        Self { index, package: package.to_string() }
+        Self {
+            index,
+            package: package.to_string(),
+        }
     }
 }
 
 impl Drop for VersionsClaim {
     fn drop(&mut self) {
-        let slot = self.index.versions
+        let slot = self
+            .index
+            .versions
             .entry(self.package.clone())
             .or_insert_with(|| Arc::new(Slot::new()))
             .clone();
-        slot.set_if_empty(|| VersionsResult::error(format!(
-            "version fetch for {} ended without a result", self.package
-        )));
+        slot.set_if_empty(|| {
+            VersionsResult::error(format!(
+                "version fetch for {} ended without a result",
+                self.package
+            ))
+        });
     }
 }
 
@@ -255,19 +269,28 @@ pub struct MetadataClaim {
 
 impl MetadataClaim {
     pub fn new(index: Arc<InMemoryIndex>, package: &str, version: &VypVersion) -> Self {
-        Self { index, package: package.to_string(), version: version.clone() }
+        Self {
+            index,
+            package: package.to_string(),
+            version: version.clone(),
+        }
     }
 }
 
 impl Drop for MetadataClaim {
     fn drop(&mut self) {
-        let slot = self.index.metadata
+        let slot = self
+            .index
+            .metadata
             .entry((self.package.clone(), self.version.clone()))
             .or_insert_with(|| Arc::new(Slot::new()))
             .clone();
-        slot.set_if_empty(|| MetadataResult::error(format!(
-            "metadata fetch for {}=={} ended without a result", self.package, self.version
-        )));
+        slot.set_if_empty(|| {
+            MetadataResult::error(format!(
+                "metadata fetch for {}=={} ended without a result",
+                self.package, self.version
+            ))
+        });
     }
 }
 

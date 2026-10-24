@@ -36,8 +36,15 @@ impl LocalSource {
         }
         let path = url.strip_prefix("file://")?;
         let path = PathBuf::from(path);
-        let path = if path.is_absolute() { path } else { project_dir.join(path) };
-        (path.is_dir()).then_some(Self::Path { path, editable: false })
+        let path = if path.is_absolute() {
+            path
+        } else {
+            project_dir.join(path)
+        };
+        (path.is_dir()).then_some(Self::Path {
+            path,
+            editable: false,
+        })
     }
 }
 
@@ -64,11 +71,23 @@ pub fn resolve_all(
         let (tree, reference) = match source {
             LocalSource::Path { path, editable } => {
                 let tree = std::fs::canonicalize(path).map_err(|e| {
-                    miette::miette!("Source for {} not found at {}: {}", declared, path.display(), e)
+                    miette::miette!(
+                        "Source for {} not found at {}: {}",
+                        declared,
+                        path.display(),
+                        e
+                    )
                 })?;
-                let base = std::fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
+                let base = std::fs::canonicalize(project_dir)
+                    .unwrap_or_else(|_| project_dir.to_path_buf());
                 let rel = crate::cache::linker::relative_to(&base, &tree);
-                (tree, SourceRef::Directory { path: rel, editable: *editable })
+                (
+                    tree,
+                    SourceRef::Directory {
+                        path: rel,
+                        editable: *editable,
+                    },
+                )
             }
             LocalSource::Git(git_ref) => {
                 let commit = git::resolve_commit(&git_ref.url, git_ref.rev.as_deref())?;
@@ -92,8 +111,9 @@ pub fn resolve_all(
             Some(m) => m,
             None => frontend()?.metadata(&tree)?,
         };
-        let (name, version) = name_and_version(&metadata)
-            .ok_or_else(|| miette::miette!("Metadata for {} has no name or version", tree.display()))?;
+        let (name, version) = name_and_version(&metadata).ok_or_else(|| {
+            miette::miette!("Metadata for {} has no name or version", tree.display())
+        })?;
         if normalize_package_name(&name) != normalize_package_name(declared) {
             return Err(miette::miette!(
                 "The source declared for {} at {} is the package {}",
@@ -105,7 +125,13 @@ pub fn resolve_all(
         let version = version
             .parse()
             .map_err(|_| miette::miette!("{} has an invalid version '{}'", name, version))?;
-        out.push(ResolvedSource { name: normalize_package_name(&name), version, metadata, reference, tree });
+        out.push(ResolvedSource {
+            name: normalize_package_name(&name),
+            version,
+            metadata,
+            reference,
+            tree,
+        });
     }
     Ok(out)
 }
@@ -129,16 +155,23 @@ fn name_and_version(metadata: &str) -> Option<(String, String)> {
 /// METADATA synthesized from `[project]`, when nothing a build needs to
 /// compute (`version`, `dependencies`, `optional-dependencies`) is dynamic.
 pub fn static_metadata(tree: &Path) -> miette::Result<Option<String>> {
-    let Ok(content) = std::fs::read_to_string(tree.join("pyproject.toml")) else { return Ok(None) };
+    let Ok(content) = std::fs::read_to_string(tree.join("pyproject.toml")) else {
+        return Ok(None);
+    };
     let doc: toml::Value = toml::from_str(&content)
         .map_err(|e| miette::miette!("Failed to parse {}/pyproject.toml: {}", tree.display(), e))?;
-    let Some(project) = doc.get("project") else { return Ok(None) };
+    let Some(project) = doc.get("project") else {
+        return Ok(None);
+    };
     let dynamic: Vec<&str> = project
         .get("dynamic")
         .and_then(|d| d.as_array())
         .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
-    if ["version", "dependencies", "optional-dependencies"].iter().any(|k| dynamic.contains(k)) {
+    if ["version", "dependencies", "optional-dependencies"]
+        .iter()
+        .any(|k| dynamic.contains(k))
+    {
         return Ok(None);
     }
     let (Some(name), Some(version)) = (
@@ -148,21 +181,42 @@ pub fn static_metadata(tree: &Path) -> miette::Result<Option<String>> {
         return Ok(None);
     };
 
-    let mut out = format!("Metadata-Version: 2.1\nName: {}\nVersion: {}\n", name, version);
+    let mut out = format!(
+        "Metadata-Version: 2.1\nName: {}\nVersion: {}\n",
+        name, version
+    );
     if let Some(rp) = project.get("requires-python").and_then(|v| v.as_str()) {
         out.push_str(&format!("Requires-Python: {}\n", rp));
     }
-    for dep in project.get("dependencies").and_then(|d| d.as_array()).into_iter().flatten() {
+    for dep in project
+        .get("dependencies")
+        .and_then(|d| d.as_array())
+        .into_iter()
+        .flatten()
+    {
         if let Some(dep) = dep.as_str() {
             out.push_str(&format!("Requires-Dist: {}\n", dep));
         }
     }
-    if let Some(extras) = project.get("optional-dependencies").and_then(|d| d.as_table()) {
+    if let Some(extras) = project
+        .get("optional-dependencies")
+        .and_then(|d| d.as_table())
+    {
         for (extra, deps) in extras {
             out.push_str(&format!("Provides-Extra: {}\n", extra));
-            for dep in deps.as_array().into_iter().flatten().filter_map(|d| d.as_str()) {
+            for dep in deps
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|d| d.as_str())
+            {
                 let line = match dep.split_once(';') {
-                    Some((req, marker)) => format!("{} ; ({}) and extra == \"{}\"", req.trim(), marker.trim(), extra),
+                    Some((req, marker)) => format!(
+                        "{} ; ({}) and extra == \"{}\"",
+                        req.trim(),
+                        marker.trim(),
+                        extra
+                    ),
                     None => format!("{} ; extra == \"{}\"", dep.trim(), extra),
                 };
                 out.push_str(&format!("Requires-Dist: {}\n", line));
@@ -232,7 +286,11 @@ impl MetadataProvider for DirectProvider {
         package: &VypPackage,
         version: &VypVersion,
     ) -> Result<Option<PackageMetadata>, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(self.packages.get(package.name()).filter(|m| &m.version == version).cloned())
+        Ok(self
+            .packages
+            .get(package.name())
+            .filter(|m| &m.version == version)
+            .cloned())
     }
 }
 
@@ -241,7 +299,11 @@ mod tests {
     use super::*;
 
     fn tree(pyproject: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("vyp-src-{}-{}", std::process::id(), pyproject.len()));
+        let dir = std::env::temp_dir().join(format!(
+            "vyp-src-{}-{}",
+            std::process::id(),
+            pyproject.len()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("pyproject.toml"), pyproject).unwrap();
@@ -257,7 +319,13 @@ mod tests {
         let md = static_metadata(&dir).unwrap().unwrap();
         assert!(md.contains("Name: Lib-B\nVersion: 0.3\n"), "{}", md);
         assert!(md.contains("Requires-Dist: requests>=2\n"));
-        assert!(md.contains("Requires-Dist: orjson ; (sys_platform != 'win32') and extra == \"fast\"\n"), "{}", md);
+        assert!(
+            md.contains(
+                "Requires-Dist: orjson ; (sys_platform != 'win32') and extra == \"fast\"\n"
+            ),
+            "{}",
+            md
+        );
         assert_eq!(name_and_version(&md), Some(("Lib-B".into(), "0.3".into())));
 
         let dynamic = tree("[project]\nname = \"x\"\ndynamic = [\"version\"]\n");
@@ -275,9 +343,15 @@ mod tests {
         ));
         assert!(matches!(
             LocalSource::from_direct_reference(&format!("file://{}", here.display()), &here),
-            Some(LocalSource::Path { editable: false, .. })
+            Some(LocalSource::Path {
+                editable: false,
+                ..
+            })
         ));
-        assert_eq!(LocalSource::from_direct_reference("https://example.com/x.whl", &here), None);
+        assert_eq!(
+            LocalSource::from_direct_reference("https://example.com/x.whl", &here),
+            None
+        );
     }
 
     #[test]
@@ -285,8 +359,12 @@ mod tests {
         let source = ResolvedSource {
             name: "lib_b".into(),
             version: "0.3".parse().unwrap(),
-            metadata: "Metadata-Version: 2.1\nName: lib-b\nVersion: 0.3\nRequires-Dist: requests\n".into(),
-            reference: SourceRef::Directory { path: "../lib-b".into(), editable: true },
+            metadata: "Metadata-Version: 2.1\nName: lib-b\nVersion: 0.3\nRequires-Dist: requests\n"
+                .into(),
+            reference: SourceRef::Directory {
+                path: "../lib-b".into(),
+                editable: true,
+            },
             tree: PathBuf::from("/x"),
         };
         let provider = DirectProvider::new(&[source], &MarkerEnvironment::current());

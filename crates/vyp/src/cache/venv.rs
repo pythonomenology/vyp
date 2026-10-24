@@ -50,7 +50,9 @@ impl VenvLayout {
                 include: root.join("Include"),
                 python_exe: root.join("Scripts").join("python.exe"),
                 python_version: detect_windows_python_version(root),
-                relocatable: read_pyvenv_cfg(root).get("relocatable").is_some_and(|v| v == "true"),
+                relocatable: read_pyvenv_cfg(root)
+                    .get("relocatable")
+                    .is_some_and(|v| v == "true"),
             });
         }
 
@@ -73,7 +75,10 @@ impl VenvLayout {
 
         let site = python_dir.path().join("site-packages");
         if !site.exists() {
-            return Err(miette::miette!("site-packages not found at {}", site.display()));
+            return Err(miette::miette!(
+                "site-packages not found at {}",
+                site.display()
+            ));
         }
 
         Ok(Self {
@@ -83,7 +88,9 @@ impl VenvLayout {
             include: root.join("include"),
             python_exe: root.join("bin").join("python"),
             python_version,
-            relocatable: read_pyvenv_cfg(root).get("relocatable").is_some_and(|v| v == "true"),
+            relocatable: read_pyvenv_cfg(root)
+                .get("relocatable")
+                .is_some_and(|v| v == "true"),
         })
     }
 
@@ -98,7 +105,10 @@ impl VenvLayout {
         }
         let python = self.python_exe.display().to_string();
         if python.len() > 127 || python.contains(' ') {
-            return format!("#!/bin/sh\n'''exec' '{}' \"$0\" \"$@\"\n' '''\n", python.replace('\'', "'\\''"));
+            return format!(
+                "#!/bin/sh\n'''exec' '{}' \"$0\" \"$@\"\n' '''\n",
+                python.replace('\'', "'\\''")
+            );
         }
         format!("#!{}\n", python)
     }

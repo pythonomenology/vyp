@@ -21,7 +21,8 @@ impl StrategyRegistry {
     /// so that higher-priority strategies are consulted first.
     pub fn register(&mut self, strategy: Box<dyn ConflictStrategy>) {
         self.strategies.push(strategy);
-        self.strategies.sort_by_key(|b| std::cmp::Reverse(b.priority()));
+        self.strategies
+            .sort_by_key(|b| std::cmp::Reverse(b.priority()));
     }
 
     /// Iterate over registered strategies in priority order.
@@ -47,7 +48,8 @@ impl ProviderRegistry {
     /// Register a provider. The registry re-sorts after each insertion.
     pub fn register(&mut self, provider: Box<dyn MetadataProvider>) {
         self.providers.push(provider);
-        self.providers.sort_by_key(|b| std::cmp::Reverse(b.priority()));
+        self.providers
+            .sort_by_key(|b| std::cmp::Reverse(b.priority()));
     }
 
     /// Iterate over registered providers in priority order.
@@ -93,8 +95,14 @@ impl ProviderRegistry {
 
     /// Return the best wheel distribution (with integrity hashes) for a
     /// resolved package+version.
-    pub fn sdist_dist(&self, package: &str, version: &vyp_api::VypVersion) -> Option<vyp_api::WheelDist> {
-        self.providers.iter().find_map(|p| p.sdist_dist(package, version))
+    pub fn sdist_dist(
+        &self,
+        package: &str,
+        version: &vyp_api::VypVersion,
+    ) -> Option<vyp_api::WheelDist> {
+        self.providers
+            .iter()
+            .find_map(|p| p.sdist_dist(package, version))
     }
 
     pub fn wheel_dist(
@@ -140,7 +148,8 @@ impl FilterRegistry {
     /// Register a filter. The registry re-sorts after each insertion.
     pub fn register(&mut self, filter: Box<dyn ResolutionFilter>) {
         self.filters.push(filter);
-        self.filters.sort_by_key(|b| std::cmp::Reverse(b.priority()));
+        self.filters
+            .sort_by_key(|b| std::cmp::Reverse(b.priority()));
     }
 
     /// Iterate over registered filters in priority order.

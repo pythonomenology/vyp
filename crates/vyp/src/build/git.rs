@@ -33,12 +33,22 @@ impl GitRef {
         // The revision follows the last `@` in the path, not one in
         // `ssh://git@host`.
         let path_start = rest.find("://").map(|i| i + 3).unwrap_or(0);
-        let path_start = rest[path_start..].find('/').map(|i| path_start + i).unwrap_or(rest.len());
+        let path_start = rest[path_start..]
+            .find('/')
+            .map(|i| path_start + i)
+            .unwrap_or(rest.len());
         let (url, rev) = match rest[path_start..].rfind('@') {
-            Some(i) => (&rest[..path_start + i], Some(rest[path_start + i + 1..].to_string())),
+            Some(i) => (
+                &rest[..path_start + i],
+                Some(rest[path_start + i + 1..].to_string()),
+            ),
             None => (rest, None),
         };
-        Some(Self { url: url.to_string(), rev: rev.filter(|r| !r.is_empty()), subdirectory })
+        Some(Self {
+            url: url.to_string(),
+            rev: rev.filter(|r| !r.is_empty()),
+            subdirectory,
+        })
     }
 }
 
@@ -62,7 +72,10 @@ fn git(args: &[&str], cwd: Option<&Path>) -> miette::Result<String> {
 }
 
 fn db_dir(url: &str) -> PathBuf {
-    cache_base_dir().join("git").join("db").join(&hex_sha256(url.as_bytes())[..24])
+    cache_base_dir()
+        .join("git")
+        .join("db")
+        .join(&hex_sha256(url.as_bytes())[..24])
 }
 
 /// Make sure the bare clone exists and has `rev` (fetching if needed);
@@ -74,16 +87,39 @@ pub fn resolve_commit(url: &str, rev: Option<&str>) -> miette::Result<String> {
         if let Some(parent) = db.parent() {
             std::fs::create_dir_all(parent).map_err(|e| miette::miette!("{}", e))?;
         }
-        git(&["clone", "--bare", "--quiet", url, &db.to_string_lossy()], None)?;
+        git(
+            &["clone", "--bare", "--quiet", url, &db.to_string_lossy()],
+            None,
+        )?;
     }
-    let lookup = |r: &str| git(&["rev-parse", "--verify", "--quiet", &format!("{}^{{commit}}", r)], Some(&db));
+    let lookup = |r: &str| {
+        git(
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{}^{{commit}}", r),
+            ],
+            Some(&db),
+        )
+    };
     // A full commit id already present needs no network.
     if rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit()) {
         if let Ok(commit) = lookup(rev) {
             return Ok(commit);
         }
     }
-    git(&["fetch", "--quiet", "--force", "--tags", "origin", "+refs/heads/*:refs/heads/*"], Some(&db))?;
+    git(
+        &[
+            "fetch",
+            "--quiet",
+            "--force",
+            "--tags",
+            "origin",
+            "+refs/heads/*:refs/heads/*",
+        ],
+        Some(&db),
+    )?;
     if let Ok(commit) = lookup(rev) {
         return Ok(commit);
     }
@@ -110,12 +146,25 @@ pub fn checkout(url: &str, commit: &str) -> miette::Result<PathBuf> {
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| miette::miette!("{}", e))?;
     }
-    git(&["clone", "--quiet", "--shared", "--no-checkout", &db.to_string_lossy(), &dir.to_string_lossy()], None)?;
+    git(
+        &[
+            "clone",
+            "--quiet",
+            "--shared",
+            "--no-checkout",
+            &db.to_string_lossy(),
+            &dir.to_string_lossy(),
+        ],
+        None,
+    )?;
     git(&["checkout", "--quiet", "--detach", commit], Some(&dir))?;
     // Submodules point at their real remotes, not the bare cache.
     git(&["remote", "set-url", "origin", url], Some(&dir))?;
     if dir.join(".gitmodules").exists() {
-        git(&["submodule", "update", "--init", "--recursive", "--quiet"], Some(&dir))?;
+        git(
+            &["submodule", "update", "--init", "--recursive", "--quiet"],
+            Some(&dir),
+        )?;
     }
     std::fs::write(dir.join(".vyp-complete"), b"").map_err(|e| miette::miette!("{}", e))?;
     Ok(dir)
@@ -137,11 +186,19 @@ mod tests {
         );
         assert_eq!(
             GitRef::parse("git+ssh://git@github.com/org/repo.git"),
-            Some(GitRef { url: "ssh://git@github.com/org/repo.git".into(), rev: None, subdirectory: None })
+            Some(GitRef {
+                url: "ssh://git@github.com/org/repo.git".into(),
+                rev: None,
+                subdirectory: None
+            })
         );
         assert_eq!(
             GitRef::parse("git+ssh://git@github.com/org/repo.git@main"),
-            Some(GitRef { url: "ssh://git@github.com/org/repo.git".into(), rev: Some("main".into()), subdirectory: None })
+            Some(GitRef {
+                url: "ssh://git@github.com/org/repo.git".into(),
+                rev: Some("main".into()),
+                subdirectory: None
+            })
         );
         assert_eq!(GitRef::parse("https://example.com/x.whl"), None);
     }
@@ -156,10 +213,28 @@ mod tests {
         run(&["init", "--quiet", "-b", "main"]);
         std::fs::write(repo.join("a.txt"), "one").unwrap();
         run(&["add", "."]);
-        run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--quiet", "-m", "one"]);
+        run(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "--quiet",
+            "-m",
+            "one",
+        ]);
         run(&["tag", "v1"]);
         std::fs::write(repo.join("a.txt"), "two").unwrap();
-        run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--quiet", "-am", "two"]);
+        run(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "--quiet",
+            "-am",
+            "two",
+        ]);
 
         let url = format!("file://{}", repo.display());
         let v1 = resolve_commit(&url, Some("v1")).unwrap();

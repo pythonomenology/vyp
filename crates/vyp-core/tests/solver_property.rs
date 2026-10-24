@@ -15,7 +15,10 @@ use vyp_index::OfflineMetadataProvider;
 struct Rng(u64);
 impl Rng {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 33
     }
     fn below(&mut self, n: u64) -> u64 {
@@ -167,7 +170,12 @@ fn validate_solution(u: &Universe, packages: &std::collections::HashMap<String, 
         let v = packages
             .get(req.package.name())
             .unwrap_or_else(|| panic!("root {} missing from solution", req.package.name()));
-        assert!(range_of(req).contains(v), "root {} version {} out of range", req.package.name(), v);
+        assert!(
+            range_of(req).contains(v),
+            "root {} version {} out of range",
+            req.package.name(),
+            v
+        );
     }
     for (pname, pver) in packages {
         let idx: usize = pname[1..].parse().unwrap();
@@ -179,7 +187,12 @@ fn validate_solution(u: &Universe, packages: &std::collections::HashMap<String, 
             let v = packages
                 .get(dep.package.name())
                 .unwrap_or_else(|| panic!("dep {} of {} missing", dep.package.name(), pname));
-            assert!(range_of(dep).contains(v), "dep {} version {} out of range", dep.package.name(), v);
+            assert!(
+                range_of(dep).contains(v),
+                "dep {} version {} out of range",
+                dep.package.name(),
+                v
+            );
         }
     }
 }
@@ -232,6 +245,9 @@ fn solver_matches_brute_force() {
 
     // Sanity: the corpus actually exercises both outcomes.
     assert!(checked_sat > 100, "too few SAT cases: {}", checked_sat);
-    assert!(checked_unsat > 100, "too few UNSAT cases: {}", checked_unsat);
+    assert!(
+        checked_unsat > 100,
+        "too few UNSAT cases: {}",
+        checked_unsat
+    );
 }
-

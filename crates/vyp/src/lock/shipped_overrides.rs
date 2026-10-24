@@ -100,7 +100,11 @@ pub fn collect(
             continue;
         }
         match std::fs::read_to_string(&cached) {
-            Ok(body) => contents.push((name.clone(), version.to_string(), Some(body).filter(|b| !b.is_empty()))),
+            Ok(body) => contents.push((
+                name.clone(),
+                version.to_string(),
+                Some(body).filter(|b| !b.is_empty()),
+            )),
             Err(_) => pending.push((
                 name.clone(),
                 version.to_string(),
@@ -129,14 +133,23 @@ pub fn collect(
         let file = match OverridesExportFile::parse(&body) {
             Ok(f) => f,
             Err(e) => {
-                tracing::warn!("ignoring malformed {} in {}=={}: {}", FILE_NAME, name, version, e);
+                tracing::warn!(
+                    "ignoring malformed {} in {}=={}: {}",
+                    FILE_NAME,
+                    name,
+                    version,
+                    e
+                );
                 continue;
             }
         };
         if normalize_package_name(&file.package) != name {
             tracing::warn!(
                 "ignoring {} in {}=={}: it was exported for package '{}'",
-                FILE_NAME, name, version, file.package
+                FILE_NAME,
+                name,
+                version,
+                file.package
             );
             continue;
         }
@@ -147,7 +160,9 @@ pub fn collect(
 
 fn cache_path(url: &str, sha256: Option<&str>) -> PathBuf {
     let key = sha256.map_or_else(|| hex_sha256(url.as_bytes()), str::to_string);
-    cache_base_dir().join("shipped-overrides").join(format!("{}.toml", key))
+    cache_base_dir()
+        .join("shipped-overrides")
+        .join(format!("{}.toml", key))
 }
 
 async fn fetch_one(
@@ -192,8 +207,10 @@ pub fn effective_overrides(
     project: &[DependencyOverride],
     inherited: &[DependencyOverride],
 ) -> miette::Result<Vec<DependencyOverride>> {
-    let project_packages: BTreeSet<String> =
-        project.iter().map(|o| normalize_package_name(&o.package)).collect();
+    let project_packages: BTreeSet<String> = project
+        .iter()
+        .map(|o| normalize_package_name(&o.package))
+        .collect();
 
     let mut by_package: HashMap<String, Vec<&DependencyOverride>> = HashMap::new();
     for o in inherited {
@@ -202,7 +219,10 @@ pub fn effective_overrides(
             continue;
         }
         let group = by_package.entry(name).or_default();
-        if !group.iter().any(|g| g.constraint == o.constraint && g.origin == o.origin) {
+        if !group
+            .iter()
+            .any(|g| g.constraint == o.constraint && g.origin == o.origin)
+        {
             group.push(o);
         }
     }
@@ -214,15 +234,29 @@ pub fn effective_overrides(
         let group = &by_package[&name];
         let mut range = vyp_core::resolver::VS::full();
         for o in group {
-            let req: Requirement = format!("{} {}", o.package, o.constraint).parse().map_err(|_| {
-                miette::miette!("Invalid inherited override for {}: '{}'", o.package, o.constraint)
-            })?;
+            let req: Requirement =
+                format!("{} {}", o.package, o.constraint)
+                    .parse()
+                    .map_err(|_| {
+                        miette::miette!(
+                            "Invalid inherited override for {}: '{}'",
+                            o.package,
+                            o.constraint
+                        )
+                    })?;
             range = range.intersection(&requirements_to_range(&req.constraints));
         }
         if range.is_empty() {
             let parts: Vec<String> = group
                 .iter()
-                .map(|o| format!("{} {} (from {})", o.package, o.constraint, describe_origin(o)))
+                .map(|o| {
+                    format!(
+                        "{} {} (from {})",
+                        o.package,
+                        o.constraint,
+                        describe_origin(o)
+                    )
+                })
                 .collect();
             return Err(miette::miette!(
                 "Dependencies ship incompatible overrides for {}:\n  {}\nAdd a [[tool.vyp.overrides]] entry for {} to decide.",
@@ -260,7 +294,10 @@ pub fn fingerprint(overrides: &[DependencyOverride]) -> BTreeSet<(String, String
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{:02x}", b)).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
 }
 
 #[cfg(test)]
@@ -276,7 +313,8 @@ mod tests {
     #[test]
     fn project_override_wins_over_inherited() {
         let project = vec![DependencyOverride::new("numpy", "<2")];
-        let out = effective_overrides(&project, &[inherited("NumPy", ">=2", "lib-a==1.0")]).unwrap();
+        let out =
+            effective_overrides(&project, &[inherited("NumPy", ">=2", "lib-a==1.0")]).unwrap();
         assert_eq!(out, project);
     }
 
@@ -291,7 +329,11 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(err.contains("lib-a==1.0") && err.contains("lib-b==3.1"), "{}", err);
+        assert!(
+            err.contains("lib-a==1.0") && err.contains("lib-b==3.1"),
+            "{}",
+            err
+        );
     }
 
     #[test]

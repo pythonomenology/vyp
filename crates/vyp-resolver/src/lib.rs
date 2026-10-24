@@ -9,6 +9,6 @@ pub mod solver;
 
 pub use provider::{requirements_to_range, VypVS};
 pub use solver::{
-    DecisionLevel, IncompatId, Incompatibility, IncompatKind, PackageId, PartialSolution,
-    SatisfierInfo, SolverError, SolverState, Term, VS, VsidsScoring,
+    DecisionLevel, IncompatId, IncompatKind, Incompatibility, PackageId, PartialSolution,
+    SatisfierInfo, SolverError, SolverState, Term, VsidsScoring, VS,
 };

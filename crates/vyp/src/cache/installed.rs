@@ -23,9 +23,13 @@ pub fn installed_distributions(layout: &VenvLayout) -> Vec<InstalledDist> {
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        let Some(stem) = name.strip_suffix(".dist-info") else { continue };
+        let Some(stem) = name.strip_suffix(".dist-info") else {
+            continue;
+        };
         // `{name}-{version}.dist-info`
-        let Some((dist, version)) = stem.rsplit_once('-') else { continue };
+        let Some((dist, version)) = stem.rsplit_once('-') else {
+            continue;
+        };
         out.push(InstalledDist {
             name: normalize_package_name(dist),
             version: version.to_string(),
@@ -98,14 +102,21 @@ fn prune_pyc_for(py_file: &Path, dirs: &mut BTreeSet<PathBuf>) -> usize {
     let Some(stem) = py_file.file_stem().and_then(|s| s.to_str()) else {
         return 0;
     };
-    let Some(parent) = py_file.parent() else { return 0 };
+    let Some(parent) = py_file.parent() else {
+        return 0;
+    };
     let pycache = parent.join("__pycache__");
-    let Ok(entries) = std::fs::read_dir(&pycache) else { return 0 };
+    let Ok(entries) = std::fs::read_dir(&pycache) else {
+        return 0;
+    };
     let prefix = format!("{}.", stem);
     let mut removed = 0;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(&prefix) && name.ends_with(".pyc") && std::fs::remove_file(entry.path()).is_ok() {
+        if name.starts_with(&prefix)
+            && name.ends_with(".pyc")
+            && std::fs::remove_file(entry.path()).is_ok()
+        {
             removed += 1;
         }
     }

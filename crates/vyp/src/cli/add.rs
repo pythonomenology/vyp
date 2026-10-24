@@ -1,7 +1,7 @@
 use clap::Args;
 use std::path::PathBuf;
-use vyp_api::Requirement;
 use vyp_api::types::package::normalize_package_name;
+use vyp_api::Requirement;
 
 #[derive(Args)]
 pub struct AddArgs {
@@ -48,16 +48,16 @@ pub fn run(args: AddArgs) -> miette::Result<()> {
 
     for (raw_spec, parsed) in args.packages.iter().zip(&parsed_reqs) {
         let normalized_name = normalize_package_name(parsed.package.name());
-        let target_array = get_or_create_target_array(
-            &mut doc,
-            args.optional.as_deref(),
-            args.group.as_deref(),
-        )?;
+        let target_array =
+            get_or_create_target_array(&mut doc, args.optional.as_deref(), args.group.as_deref())?;
 
         let existing_idx = target_array.iter().position(|item| {
             item.as_str()
                 .map(|s| {
-                    let existing_name = s.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_').next().unwrap_or("");
+                    let existing_name = s
+                        .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+                        .next()
+                        .unwrap_or("");
                     normalize_package_name(existing_name) == normalized_name
                 })
                 .unwrap_or(false)
@@ -88,31 +88,31 @@ fn get_or_create_target_array<'a>(
         let dg = doc
             .entry("dependency-groups")
             .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
-        let dg_table = dg.as_table_mut().ok_or_else(|| {
-            miette::miette!("[dependency-groups] is not a table")
-        })?;
-        let arr_item = dg_table
-            .entry(group_name)
-            .or_insert_with(|| toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new())));
-        arr_item.as_array_mut().ok_or_else(|| {
-            miette::miette!("[dependency-groups.{}] is not an array", group_name)
-        })
+        let dg_table = dg
+            .as_table_mut()
+            .ok_or_else(|| miette::miette!("[dependency-groups] is not a table"))?;
+        let arr_item = dg_table.entry(group_name).or_insert_with(|| {
+            toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new()))
+        });
+        arr_item
+            .as_array_mut()
+            .ok_or_else(|| miette::miette!("[dependency-groups.{}] is not an array", group_name))
     } else if let Some(opt_name) = optional {
         let project = doc
             .entry("project")
             .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
-        let project_table = project.as_table_mut().ok_or_else(|| {
-            miette::miette!("[project] is not a table")
-        })?;
+        let project_table = project
+            .as_table_mut()
+            .ok_or_else(|| miette::miette!("[project] is not a table"))?;
         let opt_deps = project_table
             .entry("optional-dependencies")
             .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
-        let opt_table = opt_deps.as_table_mut().ok_or_else(|| {
-            miette::miette!("[project.optional-dependencies] is not a table")
-        })?;
-        let arr_item = opt_table
-            .entry(opt_name)
-            .or_insert_with(|| toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new())));
+        let opt_table = opt_deps
+            .as_table_mut()
+            .ok_or_else(|| miette::miette!("[project.optional-dependencies] is not a table"))?;
+        let arr_item = opt_table.entry(opt_name).or_insert_with(|| {
+            toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new()))
+        });
         arr_item.as_array_mut().ok_or_else(|| {
             miette::miette!(
                 "[project.optional-dependencies.{}] is not an array",
@@ -123,14 +123,14 @@ fn get_or_create_target_array<'a>(
         let project = doc
             .entry("project")
             .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
-        let project_table = project.as_table_mut().ok_or_else(|| {
-            miette::miette!("[project] is not a table")
-        })?;
-        let arr_item = project_table
-            .entry("dependencies")
-            .or_insert_with(|| toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new())));
-        arr_item.as_array_mut().ok_or_else(|| {
-            miette::miette!("[project].dependencies is not an array")
-        })
+        let project_table = project
+            .as_table_mut()
+            .ok_or_else(|| miette::miette!("[project] is not a table"))?;
+        let arr_item = project_table.entry("dependencies").or_insert_with(|| {
+            toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new()))
+        });
+        arr_item
+            .as_array_mut()
+            .ok_or_else(|| miette::miette!("[project].dependencies is not an array"))
     }
 }

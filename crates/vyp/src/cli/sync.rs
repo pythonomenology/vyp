@@ -4,10 +4,12 @@ use std::path::PathBuf;
 use clap::Args;
 use vyp_api::normalize_package_name;
 
+use super::common::{
+    install_lockfile, resolve_from_config, target_venv, InstallOptions, ResolveOut,
+};
 use crate::cache::installed::{installed_distributions, uninstall_dist};
 use crate::config::settings::VypConfig;
 use crate::lock::lockfile::LockFile;
-use super::common::{install_lockfile, resolve_from_config, target_venv, InstallOptions, ResolveOut};
 
 /// Distributions that bootstrap a venv and must never be pruned by `sync`.
 const PROTECTED: &[&str] = &["pip", "setuptools", "wheel", "distribute", "vyp"];
@@ -68,7 +70,12 @@ pub fn run(args: SyncArgs) -> miette::Result<()> {
             resolve_from_config(&config, &[], args.torch_backend.as_deref(), None)?;
         let lockfile = match &resolve_out {
             ResolveOut::Single(result) => LockFile::from_resolution(result),
-            ResolveOut::Universal { entries, environments, errata_feeds, exclude_newer } => LockFile::from_universal_resolution(
+            ResolveOut::Universal {
+                entries,
+                environments,
+                errata_feeds,
+                exclude_newer,
+            } => LockFile::from_universal_resolution(
                 entries,
                 environments,
                 config.requires_python.as_deref(),
@@ -114,8 +121,18 @@ pub fn run(args: SyncArgs) -> miette::Result<()> {
         for d in &to_remove {
             println!("  - {} == {}", d.name, d.version);
         }
-        println!("Would install/verify {} package(s) from lock.", lockfile.packages.len());
-        let _ = install_lockfile(&lockfile, &layout, &InstallOptions { dry_run: true, ..options })?;
+        println!(
+            "Would install/verify {} package(s) from lock.",
+            lockfile.packages.len()
+        );
+        let _ = install_lockfile(
+            &lockfile,
+            &layout,
+            &InstallOptions {
+                dry_run: true,
+                ..options
+            },
+        )?;
         return Ok(());
     }
 
@@ -129,6 +146,9 @@ pub fn run(args: SyncArgs) -> miette::Result<()> {
     install_lockfile(&lockfile, &layout, &options)?;
     crate::env::provenance::record_install(&layout, &lockfile)?;
 
-    println!("Environment synced to lock ({} packages).", lockfile.packages.len());
+    println!(
+        "Environment synced to lock ({} packages).",
+        lockfile.packages.len()
+    );
     Ok(())
 }

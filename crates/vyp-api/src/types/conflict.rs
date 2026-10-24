@@ -91,7 +91,11 @@ impl ConflictSet {
     }
 
     pub fn add(&mut self, decl: ConflictDeclaration) {
-        if !self.declarations.iter().any(|d| d.name == decl.name && d.origin == decl.origin) {
+        if !self
+            .declarations
+            .iter()
+            .any(|d| d.name == decl.name && d.origin == decl.origin)
+        {
             self.declarations.push(decl);
         }
     }

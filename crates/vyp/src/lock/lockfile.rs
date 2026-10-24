@@ -1,8 +1,8 @@
-use vyp_api::{SelectionReason, VariantDescriptor};
-use vyp_core::{ErrataFeedDigest, ResolutionResult};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
+use vyp_api::{SelectionReason, VariantDescriptor};
+use vyp_core::{ErrataFeedDigest, ResolutionResult};
 
 use super::universal::UniversalPackageEntry;
 
@@ -13,15 +13,27 @@ pub struct PyLockFile {
     pub lock_version: String,
     #[serde(rename = "created-by")]
     pub created_by: String,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "requires-python")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "requires-python"
+    )]
     pub requires_python: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environments: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extras: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "dependency-groups")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "dependency-groups"
+    )]
     pub dependency_groups: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "default-groups")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "default-groups"
+    )]
     pub default_groups: Vec<String>,
     pub packages: Vec<PyLockPackage>,
     /// Tool-specific, lock-level metadata (`[tool.vyp]`).
@@ -38,10 +50,18 @@ pub struct PyLockTool {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct VypLockTool {
     /// Errata feeds consulted, with the digest of the content used.
-    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "errata-feeds")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "errata-feeds"
+    )]
     pub errata_feeds: Vec<LockedErrataFeed>,
     /// The upload-time cutoff the lock was resolved with.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "exclude-newer")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "exclude-newer"
+    )]
     pub exclude_newer: Option<String>,
 }
 
@@ -60,7 +80,10 @@ impl PyLockTool {
             vyp: Some(VypLockTool {
                 errata_feeds: feeds
                     .iter()
-                    .map(|f| LockedErrataFeed { source: f.source.clone(), sha256: f.sha256.clone() })
+                    .map(|f| LockedErrataFeed {
+                        source: f.source.clone(),
+                        sha256: f.sha256.clone(),
+                    })
                     .collect(),
                 exclude_newer: exclude_newer.map(vyp_index::timestamp::format_rfc3339),
             }),
@@ -73,7 +96,11 @@ impl PyLockTool {
 pub struct PyLockPackage {
     pub name: String,
     pub version: String,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "requires-python")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "requires-python"
+    )]
     pub requires_python: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dependencies: Vec<String>,
@@ -137,7 +164,11 @@ pub struct PyLockVcs {
     #[serde(rename = "type")]
     pub kind: String,
     pub url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "requested-revision")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "requested-revision"
+    )]
     pub requested_revision: Option<String>,
     #[serde(rename = "commit-id")]
     pub commit_id: String,
@@ -221,7 +252,12 @@ pub fn directory_ref(result: &ResolutionResult, name: &str) -> Option<PyLockDire
 
 pub fn vcs_ref(result: &ResolutionResult, name: &str) -> Option<PyLockVcs> {
     match result.source_refs.get(name)? {
-        vyp_core::SourceRef::Git { url, requested_revision, commit, subdirectory } => Some(PyLockVcs {
+        vyp_core::SourceRef::Git {
+            url,
+            requested_revision,
+            commit,
+            subdirectory,
+        } => Some(PyLockVcs {
             kind: "git".to_string(),
             url: url.clone(),
             requested_revision: requested_revision.clone(),
@@ -253,8 +289,8 @@ pub fn package_tool(result: &ResolutionResult, name: &str) -> Option<PyLockPacka
         .iter()
         .filter(|e| e.package == name)
         .filter_map(|e| {
-            let requires_apply = !e.requires.is_empty()
-                && version.is_some_and(|v| e.applies_to(name, v));
+            let requires_apply =
+                !e.requires.is_empty() && version.is_some_and(|v| e.applies_to(name, v));
             let effect = if e.exclude {
                 "exclude"
             } else if requires_apply {
@@ -276,13 +312,17 @@ pub fn package_tool(result: &ResolutionResult, name: &str) -> Option<PyLockPacka
         })
         .collect();
 
-    let backtracked = result.backtracks.iter().find(|b| b.package == name).map(|b| LockedBacktrack {
-        newest: b.newest.to_string(),
-        skipped: b.skipped,
-        dependency: b.dependency.clone(),
-        newest_requires: b.newest_requires.clone(),
-        message: b.describe(),
-    });
+    let backtracked = result
+        .backtracks
+        .iter()
+        .find(|b| b.package == name)
+        .map(|b| LockedBacktrack {
+            newest: b.newest.to_string(),
+            skipped: b.skipped,
+            dependency: b.dependency.clone(),
+            newest_requires: b.newest_requires.clone(),
+            message: b.describe(),
+        });
 
     if record.is_none() && overrides.is_empty() && errata.is_empty() && backtracked.is_none() {
         return None;
@@ -331,17 +371,21 @@ impl PyLockFile {
             .map(|(name, version)| {
                 let tool = package_tool(result, name);
 
-                let wheels = result.wheel_urls.get(name.as_str())
-                    .map(|info| vec![PyLockWheel {
-                        name: info.filename.clone(),
-                        url: Some(info.url.clone()),
-                        size: None,
-                        hashes: if info.hashes.is_empty() {
-                            None
-                        } else {
-                            Some(info.hashes.clone())
-                        },
-                    }])
+                let wheels = result
+                    .wheel_urls
+                    .get(name.as_str())
+                    .map(|info| {
+                        vec![PyLockWheel {
+                            name: info.filename.clone(),
+                            url: Some(info.url.clone()),
+                            size: None,
+                            hashes: if info.hashes.is_empty() {
+                                None
+                            } else {
+                                Some(info.hashes.clone())
+                            },
+                        }]
+                    })
                     .unwrap_or_default();
 
                 PyLockPackage {
@@ -350,12 +394,15 @@ impl PyLockFile {
                     requires_python: None,
                     dependencies: Vec::new(),
                     wheels,
-                    sdist: result.sdist_urls.get(name.as_str()).map(|info| PyLockSdist {
-                        name: info.filename.clone(),
-                        url: Some(info.url.clone()),
-                        size: None,
-                        hashes: (!info.hashes.is_empty()).then(|| info.hashes.clone()),
-                    }),
+                    sdist: result
+                        .sdist_urls
+                        .get(name.as_str())
+                        .map(|info| PyLockSdist {
+                            name: info.filename.clone(),
+                            url: Some(info.url.clone()),
+                            size: None,
+                            hashes: (!info.hashes.is_empty()).then(|| info.hashes.clone()),
+                        }),
                     directory: directory_ref(result, name),
                     vcs: vcs_ref(result, name),
                     marker: None,
@@ -431,8 +478,7 @@ impl PyLockFile {
     pub fn read_from_file(path: &Path) -> miette::Result<Self> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| miette::miette!("Failed to read pylock.toml: {}", e))?;
-        toml::from_str(&content)
-            .map_err(|e| miette::miette!("Failed to parse pylock.toml: {}", e))
+        toml::from_str(&content).map_err(|e| miette::miette!("Failed to parse pylock.toml: {}", e))
     }
 
     /// Derive the default file name for a lock file.
@@ -473,23 +519,37 @@ impl PyLockFile {
                         pkg.name,
                         o.constraint,
                         o.origin,
-                        o.reason.as_deref().map(|r| format!(" -- {}", r)).unwrap_or_default()
+                        o.reason
+                            .as_deref()
+                            .map(|r| format!(" -- {}", r))
+                            .unwrap_or_default()
                     ));
                 }
                 if let Some(b) = &prov.backtracked {
                     explanation.push_str(&format!("  Warning: {}\n", b.message));
                 }
                 for e in &prov.errata {
-                    let versions = if e.versions.is_empty() { "all releases" } else { e.versions.as_str() };
+                    let versions = if e.versions.is_empty() {
+                        "all releases"
+                    } else {
+                        e.versions.as_str()
+                    };
                     let effect = match e.effect.as_str() {
                         "exclude" => format!("releases {} excluded", versions),
-                        _ => format!("this release ({}) also requires {}", versions, e.requires.join(", ")),
+                        _ => format!(
+                            "this release ({}) also requires {}",
+                            versions,
+                            e.requires.join(", ")
+                        ),
                     };
                     explanation.push_str(&format!(
                         "  Erratum: {} [{}]{}\n",
                         effect,
                         e.source,
-                        e.reason.as_deref().map(|r| format!(" -- {}", r)).unwrap_or_default()
+                        e.reason
+                            .as_deref()
+                            .map(|r| format!(" -- {}", r))
+                            .unwrap_or_default()
                     ));
                 }
             }

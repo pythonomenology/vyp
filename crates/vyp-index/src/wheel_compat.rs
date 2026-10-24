@@ -123,7 +123,9 @@ impl PlatformTags {
     /// `cp3Y` with `2 <= Y <= minor`: the first stable-ABI release (3.2) up
     /// to the target.
     fn is_abi3_python(&self, py: &str) -> bool {
-        let Some((major, minor)) = self.abi3_python else { return false };
+        let Some((major, minor)) = self.abi3_python else {
+            return false;
+        };
         py.strip_prefix(&format!("cp{}", major))
             .and_then(|m| m.parse::<u32>().ok())
             .is_some_and(|m| (2..=minor).contains(&m))
@@ -205,14 +207,17 @@ fn detect_free_threaded(env: &MarkerEnvironment) -> bool {
     if std::env::var("VYP_FREE_THREADED").is_ok_and(|v| v == "1") {
         return true;
     }
-    env.python_full_version.ends_with('t')
-        || env.implementation_version.ends_with('t')
+    env.python_full_version.ends_with('t') || env.implementation_version.ends_with('t')
 }
 
 fn build_python_tags(impl_name: &str, major: u32, minor: u32) -> Vec<String> {
     let mut tags = Vec::new();
 
-    let cp_prefix = if impl_name == "cpython" { "cp" } else { impl_name };
+    let cp_prefix = if impl_name == "cpython" {
+        "cp"
+    } else {
+        impl_name
+    };
 
     tags.push(format!("{}{}{}", cp_prefix, major, minor));
 
@@ -228,7 +233,11 @@ fn build_python_tags(impl_name: &str, major: u32, minor: u32) -> Vec<String> {
 fn build_abi_tags(impl_name: &str, major: u32, minor: u32, free_threaded: bool) -> Vec<String> {
     let mut tags = Vec::new();
 
-    let cp_prefix = if impl_name == "cpython" { "cp" } else { impl_name };
+    let cp_prefix = if impl_name == "cpython" {
+        "cp"
+    } else {
+        impl_name
+    };
 
     if free_threaded {
         // Free-threaded ABI is incompatible with the GIL ABI; prefer it but
@@ -347,7 +356,13 @@ fn sysctl_product_version() -> Option<String> {
     let mut len = buf.len();
     // SAFETY: `name` is NUL-terminated; `buf`/`len` describe a valid buffer.
     let rc = unsafe {
-        libc::sysctlbyname(name.as_ptr(), buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0)
+        libc::sysctlbyname(
+            name.as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
     };
     if rc != 0 || len == 0 {
         return None;
@@ -479,7 +494,10 @@ fn parse_libc_override(s: &str) -> Option<Libc> {
 }
 
 fn musl_minor_from_ldd() -> Option<u32> {
-    let out = std::process::Command::new("ldd").arg("--version").output().ok()?;
+    let out = std::process::Command::new("ldd")
+        .arg("--version")
+        .output()
+        .ok()?;
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -520,8 +538,6 @@ fn parse_musl_version(text: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-
 
     fn arm64_mac_env() -> MarkerEnvironment {
         MarkerEnvironment {
@@ -564,25 +580,19 @@ mod tests {
     #[test]
     fn arm64_mac_wheel_compatible() {
         let tags = PlatformTags::from_env(&arm64_mac_env());
-        assert!(tags.is_compatible(
-            "pydantic_core-2.41.5-cp310-cp310-macosx_11_0_arm64.whl"
-        ));
+        assert!(tags.is_compatible("pydantic_core-2.41.5-cp310-cp310-macosx_11_0_arm64.whl"));
     }
 
     #[test]
     fn x86_64_mac_wheel_incompatible_on_arm64() {
         let tags = PlatformTags::from_env(&arm64_mac_env());
-        assert!(!tags.is_compatible(
-            "pydantic_core-2.41.5-cp310-cp310-macosx_10_12_x86_64.whl"
-        ));
+        assert!(!tags.is_compatible("pydantic_core-2.41.5-cp310-cp310-macosx_10_12_x86_64.whl"));
     }
 
     #[test]
     fn universal2_wheel_compatible_on_arm64() {
         let tags = PlatformTags::from_env(&arm64_mac_env());
-        assert!(tags.is_compatible(
-            "pydantic_core-2.41.5-cp310-cp310-macosx_11_0_universal2.whl"
-        ));
+        assert!(tags.is_compatible("pydantic_core-2.41.5-cp310-cp310-macosx_11_0_universal2.whl"));
     }
 
     #[test]
@@ -596,17 +606,13 @@ mod tests {
     #[test]
     fn wrong_python_version_incompatible() {
         let tags = PlatformTags::from_env(&arm64_mac_env());
-        assert!(!tags.is_compatible(
-            "pydantic_core-2.41.5-cp312-cp312-macosx_11_0_arm64.whl"
-        ));
+        assert!(!tags.is_compatible("pydantic_core-2.41.5-cp312-cp312-macosx_11_0_arm64.whl"));
     }
 
     #[test]
     fn abi3_wheel_compatible() {
         let tags = PlatformTags::from_env(&arm64_mac_env());
-        assert!(tags.is_compatible(
-            "some_package-1.0.0-cp310-abi3-macosx_11_0_arm64.whl"
-        ));
+        assert!(tags.is_compatible("some_package-1.0.0-cp310-abi3-macosx_11_0_arm64.whl"));
     }
 
     #[test]
@@ -615,7 +621,10 @@ mod tests {
         assert!(tags.is_compatible("ast_serialize-0.13.1-cp39-abi3-macosx_11_0_arm64.whl"));
         assert!(tags.is_compatible("x-1.0-cp32-abi3-macosx_11_0_arm64.whl"));
         assert!(!tags.is_compatible("x-1.0-cp39-cp39-macosx_11_0_arm64.whl"));
-        assert!(!tags.is_compatible("x-1.0-cp315-abi3-macosx_11_0_arm64.whl"), "abi3 from a newer CPython");
+        assert!(
+            !tags.is_compatible("x-1.0-cp315-abi3-macosx_11_0_arm64.whl"),
+            "abi3 from a newer CPython"
+        );
         assert!(!tags.is_compatible("x-1.0-cp39-abi3-manylinux_2_17_x86_64.whl"));
         let exact = tags.compatibility_score("x-1.0-cp310-cp310-macosx_11_0_arm64.whl");
         let abi3 = tags.compatibility_score("x-1.0-cp39-abi3-macosx_11_0_arm64.whl");
@@ -675,19 +684,27 @@ mod tests {
         env.python_full_version = "3.13.0t".to_string();
         let tags = PlatformTags::from_env(&env);
         // A cp313t free-threaded wheel must be considered compatible.
-        assert!(tags.is_compatible("foo-1.0-cp313-cp313t-manylinux_2_17_x86_64.whl")
-            || tags.is_compatible("foo-1.0-cp313-cp313t-linux_x86_64.whl"));
+        assert!(
+            tags.is_compatible("foo-1.0-cp313-cp313t-manylinux_2_17_x86_64.whl")
+                || tags.is_compatible("foo-1.0-cp313-cp313t-linux_x86_64.whl")
+        );
     }
 
     #[test]
     fn parse_glibc_version_works() {
         assert_eq!(parse_glibc_version("ldd (GNU libc) 2.31"), Some(31));
-        assert_eq!(parse_glibc_version("ldd (Ubuntu GLIBC 2.35-0ubuntu3) 2.35"), Some(35));
+        assert_eq!(
+            parse_glibc_version("ldd (Ubuntu GLIBC 2.35-0ubuntu3) 2.35"),
+            Some(35)
+        );
     }
 
     #[test]
     fn parse_musl_version_works() {
-        assert_eq!(parse_musl_version("musl libc (x86_64)\nVersion 1.2.3"), Some(2));
+        assert_eq!(
+            parse_musl_version("musl libc (x86_64)\nVersion 1.2.3"),
+            Some(2)
+        );
     }
 
     // --- helpers used only by tests to exercise libc-specific tag logic ---

@@ -113,10 +113,8 @@ impl ResolutionFilter for SubstitutionFilter {
                     if let Some(preferred) = &sub.prefer {
                         if pkg_name != *preferred {
                             candidate.excluded = true;
-                            candidate.exclusion_reason = Some(format!(
-                                "non-preferred substitute (prefer: {})",
-                                preferred
-                            ));
+                            candidate.exclusion_reason =
+                                Some(format!("non-preferred substitute (prefer: {})", preferred));
                         }
                     }
                 }

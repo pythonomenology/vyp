@@ -87,21 +87,14 @@ pub trait MetadataProvider: Send + Sync + Debug {
     /// Non-blocking check: return versions if already available in memory.
     /// Used by the solver to prefer packages whose data has arrived from
     /// a background prefetch, avoiding unnecessary blocking.
-    fn try_available_versions(
-        &self,
-        _package: &VypPackage,
-    ) -> Option<PackageVersions> {
+    fn try_available_versions(&self, _package: &VypPackage) -> Option<PackageVersions> {
         None
     }
 
     /// Return the best wheel download URL for a resolved package+version.
     /// Used to populate wheel URLs in the lockfile so installs skip the
     /// Simple API lookup.
-    fn wheel_url(
-        &self,
-        _package: &str,
-        _version: &VypVersion,
-    ) -> Option<(String, String)> {
+    fn wheel_url(&self, _package: &str, _version: &VypVersion) -> Option<(String, String)> {
         None
     }
 
@@ -109,17 +102,14 @@ pub trait MetadataProvider: Send + Sync + Debug {
     /// resolved package+version. The default falls back to [`wheel_url`] with
     /// no hashes, so existing providers keep working; index providers override
     /// it to pin integrity hashes into the lock file.
-    fn wheel_dist(
-        &self,
-        package: &str,
-        version: &VypVersion,
-    ) -> Option<WheelDist> {
-        self.wheel_url(package, version).map(|(filename, url)| WheelDist {
-            filename,
-            url,
-            hashes: HashMap::new(),
-            size: None,
-        })
+    fn wheel_dist(&self, package: &str, version: &VypVersion) -> Option<WheelDist> {
+        self.wheel_url(package, version)
+            .map(|(filename, url)| WheelDist {
+                filename,
+                url,
+                hashes: HashMap::new(),
+                size: None,
+            })
     }
 
     /// The source distribution to build for a resolved package+version that

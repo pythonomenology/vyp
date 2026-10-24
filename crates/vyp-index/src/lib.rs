@@ -20,5 +20,7 @@ pub use cache::MetadataCache;
 pub use client::OfflineMetadataProvider;
 pub use in_memory_index::{InMemoryIndex, MetadataResult, VersionsResult, WheelInfo};
 pub use pypi::{ProfileCounters, PyPIMetadataProvider};
-pub use version_filter::{requires_python_ok, version_is_viable, ExcludeNewer, FilterOptions, SdistPolicy};
+pub use version_filter::{
+    requires_python_ok, version_is_viable, ExcludeNewer, FilterOptions, SdistPolicy,
+};
 pub use wheel_compat::PlatformTags;
